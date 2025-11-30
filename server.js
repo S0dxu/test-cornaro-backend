@@ -201,8 +201,23 @@ function cacheRequest(ttl = 5000) {
 }
 
 app.get("/get-info", cacheRequest(10000), async (req, res) => {
-  const infos = await Info.find({}, { createdBy: 0 }).sort({ createdAt: -1 }).limit(15);
-  res.json({ infos });
+  let page = parseInt(req.query.page) || 1;
+  const limit = 15;
+  const skip = (page - 1) * limit;
+
+  const infos = await Info.find({}, { createdBy: 0 })
+    .sort({ createdAt: -1 })
+    .skip(skip)
+    .limit(limit);
+
+  const total = await Info.countDocuments();
+
+  res.json({
+    infos,
+    total,
+    page,
+    totalPages: Math.ceil(total / limit)
+  });
 });
 
 app.get("/is-admin", async (req, res) => {
