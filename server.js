@@ -96,19 +96,47 @@ const sendMailAsync = (mailOptions) =>
 
 app.post("/register/request", authLimiter, async (req, res) => {
   const { schoolEmail } = req.body;
-  if (!schoolEmail || !isValidSchoolEmail(schoolEmail)) return res.status(400).json({ message: "Email non valida" });
+
+  // Controllo email valida
+  if (!schoolEmail || !isValidSchoolEmail(schoolEmail))
+    return res.status(400).json({ message: "Email non valida" });
+
+  // Controllo se l'utente esiste già
+  const exists = await User.findOne({ schoolEmail });
+  if (exists) return res.status(400).json({ message: "Utente già registrato" });
+
   const now = Date.now();
+  // Controllo cooldown invio email
   if (emailCooldown.has(schoolEmail) && now - emailCooldown.get(schoolEmail) < 60000)
     return res.status(429).json({ message: "Attendi 60 secondi" });
+
   const code = generateCode();
   const expiresAt = new Date(now + 10 * 60000);
+
   try {
-    await sendMailAsync({ from: process.env.EMAIL_USER, to: schoolEmail, subject: "Codice di verifica App Cornaro", text: `Il tuo codice: ${code}` });
-  } catch { return res.status(400).json({ message: "Email inesistente" }); }
-  await VerificationCode.findOneAndUpdate({ schoolEmail }, { code, expiresAt }, { upsert: true });
+    // Invio codice via email
+    await sendMailAsync({
+      from: process.env.EMAIL_USER,
+      to: schoolEmail,
+      subject: "Codice di verifica App Cornaro",
+      text: `Il tuo codice: ${code}`
+    });
+  } catch (err) {
+    console.error("Errore invio email:", err.message);
+    return res.status(400).json({ message: "Email inesistente o problema nell'invio" });
+  }
+
+  // Salvataggio codice nel DB
+  await VerificationCode.findOneAndUpdate(
+    { schoolEmail },
+    { code, expiresAt },
+    { upsert: true }
+  );
+
   emailCooldown.set(schoolEmail, now);
   res.json({ message: "Codice inviato" });
 });
+
 
 app.post("/register/verify", authLimiter, async (req, res) => {
   const { firstName, lastName, instagram, schoolEmail, password, code, profileImage } = req.body;
