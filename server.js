@@ -84,7 +84,7 @@ function generateCode() {
 function isValidSchoolEmail(email) {
   email = email.normalize("NFKC").replace(/[^\x00-\x7F]/g, "").toLowerCase().trim();
   if (/[\r\n]/.test(email)) return false;
-  return /^[a-z]*\.[a-z]{2,3}@studenti\.liceocornaro\.edu\.it$/.test(email);
+  return /^[^@]+@studenti\.liceocornaro\.edu\.it$/.test(email);
 }
 
 const sendMailAsync = (mailOptions) =>
