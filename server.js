@@ -8,16 +8,32 @@ const rateLimit = require("express-rate-limit");
 const multer = require("multer");
 require("dotenv").config();
 
+//TODO email spoofing possibile, regex email troppo permissiva, 
+//TODO nessuna protezione da enumeration di email, cooldown basato 
+//TODO su Map volatile e non persistente, brute‑force del codice OTP 
+//TODO gestito in memoria e resettabile con restart, OTP non firmato e
+//TODO non legato a device/IP, password policy assente, JWT senza 
+//TODO scadenza, JWT con payload debole (solo id=email), assenza di 
+//TODO refresh token, mancata validazione input su tutti i campi, rischio NoSQL 
+//TODO injection (findOne({ schoolEmail }) senza sanitizzazione), mancanza 
+//TODO di helmet e protezioni HTTP, rate‑limit globale troppo alto e poco
+//TODO  mirato, nessun controllo anti‑spam su nodemailer, nessuna protezione 
+//TODO CSRF, nessuna protezione contro replay dell’OTP, caricamento file senza 
+//TODO controllo MIME affidabile, nessun limite di estensione o tipo file, 
+//TODO nessun antivirus o sandbox per upload, possibile bypass NSFW API, 
+//TODO nessuna verifica dimensioni immagine reale, uso di base64 non sicuro 
+//TODO per upload, nessun controllo autenticazione su upload-imgur, nessun 
+//TODO controllo sul numero di upload, nessun logging di sicurezza, nessuna 
+//TODO rotazione JWT secret, gestione errori troppo generica, possibili memory 
+//TODO leak da Map, dati sensibili in plain-text nei log, nessuna verifica di 
+//TODO uguaglianza costante (timing attack) nei confronti dell’OTP.
+
 const app = express();
 const PORT = process.env.PORT || 3000;
 const SECRET_KEY = process.env.JWT_SECRET;
 
 app.use(express.json());
-app.use(cors({
-  origin: "*",
-  methods: ["GET", "POST"],
-  allowedHeaders: ["Content-Type", "Authorization"]
-}));
+app.use(cors({ methods: ["GET", "POST"], allowedHeaders: ["Content-Type"] }));
 
 mongoose.connect(process.env.MONGO_URI);
 
@@ -47,14 +63,13 @@ const infoSchema = new mongoose.Schema({
   message: { type: String, required: true },
   type: { type: String, enum: ["info", "alert"], default: "info" },
   createdAt: { type: Date, default: Date.now },
-  createdBy: String
+  createdBy: { type: String },
 });
 const Info = mongoose.model("Info", infoSchema);
 
-const createLimiter = (max) =>
-  rateLimit({ windowMs: 60000, max, standardHeaders: true, legacyHeaders: false });
+const limiter = rateLimit({ windowMs: 60000, max: 20 });
+app.use(limiter);
 
-const authLimiter = createLimiter(30);
 const transporter = nodemailer.createTransport({
   service: "gmail",
   auth: { user: process.env.EMAIL_USER, pass: process.env.EMAIL_PASS }
@@ -63,6 +78,7 @@ const transporter = nodemailer.createTransport({
 function verifyAdmin(req, res, next) {
   const token = req.headers["authorization"]?.split(" ")[1];
   if (!token) return res.status(401).json({ message: "Token mancante" });
+
   try {
     const payload = jwt.verify(token, SECRET_KEY);
     User.findOne({ schoolEmail: payload.id }).then(user => {
@@ -71,7 +87,9 @@ function verifyAdmin(req, res, next) {
       req.user = user;
       next();
     });
-  } catch { return res.status(401).json({ message: "Token non valido" }); }
+  } catch (err) {
+    return res.status(401).json({ message: "Token non valido" });
+  }
 }
 
 function generateCode() {
@@ -87,46 +105,36 @@ function isValidSchoolEmail(email) {
   return /^[^@]+@studenti\.liceocornaro\.edu\.it$/.test(email);
 }
 
-const sendMailAsync = (mailOptions) =>
-  new Promise((resolve, reject) => {
-    setImmediate(() => {
-      transporter.sendMail(mailOptions, (err, info) => (err ? reject(err) : resolve(info)));
-    });
-  });
-
-app.post("/register/request", authLimiter, async (req, res) => {
+app.post("/register/request", async (req, res) => {
   const { schoolEmail } = req.body;
-
-  // Controllo email valida
-  if (!schoolEmail || !isValidSchoolEmail(schoolEmail))
+  if (!schoolEmail) return res.status(400).json({ message: "Email richiesta" });
+  if (!isValidSchoolEmail(schoolEmail)) {
     return res.status(400).json({ message: "Email non valida" });
+  }
 
-  // Controllo se l'utente esiste già
   const exists = await User.findOne({ schoolEmail });
   if (exists) return res.status(400).json({ message: "Utente già registrato" });
 
   const now = Date.now();
-  // Controllo cooldown invio email
-  if (emailCooldown.has(schoolEmail) && now - emailCooldown.get(schoolEmail) < 60000)
-    return res.status(429).json({ message: "Attendi 60 secondi" });
+  if (emailCooldown.has(schoolEmail)) {
+    const diff = now - emailCooldown.get(schoolEmail);
+    if (diff < 60000) return res.status(429).json({ message: "Attendi 60 secondi" });
+  }
 
   const code = generateCode();
   const expiresAt = new Date(now + 10 * 60000);
 
   try {
-    // Invio codice via email
-    await sendMailAsync({
+    await transporter.sendMail({
       from: process.env.EMAIL_USER,
       to: schoolEmail,
       subject: "Codice di verifica App Cornaro",
       text: `Il tuo codice: ${code}`
     });
   } catch (err) {
-    console.error("Errore invio email:", err.message);
-    return res.status(400).json({ message: "Email inesistente o problema nell'invio" });
+    return res.status(400).json({ message: "Email inesistente" });
   }
 
-  // Salvataggio codice nel DB
   await VerificationCode.findOneAndUpdate(
     { schoolEmail },
     { code, expiresAt },
@@ -137,13 +145,16 @@ app.post("/register/request", authLimiter, async (req, res) => {
   res.json({ message: "Codice inviato" });
 });
 
-
-app.post("/register/verify", authLimiter, async (req, res) => {
+app.post("/register/verify", async (req, res) => {
   const { firstName, lastName, instagram, schoolEmail, password, code, profileImage } = req.body;
-  if (!firstName || !lastName || !schoolEmail || !password || !code) return res.status(400).json({ message: "Campi obbligatori mancanti" });
+
+  if (!firstName || !lastName || !schoolEmail || !password || !code)
+    return res.status(400).json({ message: "Tutti i campi obbligatori sono richiesti" });
+
   const key = schoolEmail;
   const fail = failedAttempts.get(key) || { count: 0, lock: 0 };
   if (fail.lock > Date.now()) return res.status(429).json({ message: "Bloccato temporaneamente" });
+
   const record = await VerificationCode.findOne({ schoolEmail });
   if (!record || record.code !== code) {
     fail.count++;
@@ -155,42 +166,70 @@ app.post("/register/verify", authLimiter, async (req, res) => {
     failedAttempts.set(key, fail);
     return res.status(400).json({ message: "Codice non valido" });
   }
+
   if (record.expiresAt < new Date()) return res.status(400).json({ message: "Codice scaduto" });
+
   const exists = await User.findOne({ schoolEmail });
   if (exists) return res.status(400).json({ message: "Utente già esistente" });
+
   const hashed = await bcrypt.hash(password, 10);
-  await User.create({ firstName, lastName, instagram: instagram || "", schoolEmail, password: hashed, profileImage: profileImage || "" });
+  await new User({
+    firstName,
+    lastName,
+    instagram: instagram || "",
+    schoolEmail,
+    password: hashed,
+    profileImage: profileImage || ""
+  }).save();
+
   await VerificationCode.deleteOne({ schoolEmail });
   failedAttempts.delete(key);
+
   const token = jwt.sign({ id: schoolEmail }, SECRET_KEY);
   res.status(201).json({ message: "Registrazione completata", token });
 });
 
-app.post("/login", authLimiter, async (req, res) => {
+app.post("/login", async (req, res) => {
   const { schoolEmail, password } = req.body;
   if (!schoolEmail || !password) return res.status(400).json({ message: "Campi mancanti" });
+
   const user = await User.findOne({ schoolEmail });
   if (!user) return res.status(400).json({ message: "Credenziali errate" });
+
   const match = await bcrypt.compare(password, user.password);
   if (!match) return res.status(400).json({ message: "Credenziali errate" });
+
   const token = jwt.sign({ id: schoolEmail }, SECRET_KEY);
-  res.json({ message: "Login riuscito", token, firstName: user.firstName, lastName: user.lastName, instagram: user.instagram || "", schoolEmail: user.schoolEmail, profileImage: user.profileImage || "" });
+  res.json({
+    message: "Login riuscito",
+    token,
+    firstName: user.firstName,
+    lastName: user.lastName,
+    instagram: user.instagram || "",
+    schoolEmail: user.schoolEmail,
+    profileImage: user.profileImage || ""
+  });
 });
 
-app.post("/logout", async (req, res) => res.json({ message: "Logout effettuato" }));
+app.post("/logout", async (req, res) => {
+  res.json({ message: "Logout effettuato" });
+});
 
-app.post("/admin/clean-codes", verifyAdmin, async (req, res) => {
-  const result = await VerificationCode.deleteMany({ expiresAt: { $lt: new Date() } });
+app.post("/admin/clean-codes", async (req, res) => {
+  const now = new Date();
+  const result = await VerificationCode.deleteMany({ expiresAt: { $lt: now } });
   res.json({ eliminati: result.deletedCount });
 });
 
 const storage = multer.memoryStorage();
-const upload = multer({ storage, limits: { fileSize: 2 * 1024 * 1024 } });
+const upload = multer({ storage });
 
 app.post("/upload-imgur", upload.single("image"), async (req, res) => {
   if (!req.file) return res.status(400).json({ message: "File mancante" });
+
   try {
     const fetch = (await import("node-fetch")).default;
+
     const boundary = "----WebKitFormBoundaryCheckNSFW";
     const body = Buffer.concat([
       Buffer.from(`--${boundary}\r\n`),
@@ -199,74 +238,84 @@ app.post("/upload-imgur", upload.single("image"), async (req, res) => {
       req.file.buffer,
       Buffer.from(`\r\n--${boundary}--\r\n`)
     ]);
-    const nsfwResponse = await fetch("https://letspurify.askjitendra.com/send/data", { method: "POST", headers: { "accept": "*/*", "content-type": `multipart/form-data; boundary=${boundary}` }, body });
+
+    const nsfwResponse = await fetch("https://letspurify.askjitendra.com/send/data", {
+      method: "POST",
+      headers: {
+        "accept": "*/*",
+        "content-type": `multipart/form-data; boundary=${boundary}`,
+      },
+      body: body,
+    });
+
     const nsfwData = await nsfwResponse.json();
-    if (nsfwData.status) return res.status(400).json({ message: "L'immagine non è consentita" });
+
+    if (nsfwData.status) {
+      return res.status(400).json({ message: "L'immagine non è consentita" });
+    }
+
     const base64Image = req.file.buffer.toString("base64");
-    const imgurResponse = await fetch("https://api.imgur.com/3/upload", { method: "POST", headers: { Authorization: `Client-ID ${process.env.IMGUR_CLIENT_ID}` }, body: new URLSearchParams({ image: base64Image }) });
+
+    const imgurResponse = await fetch("https://api.imgur.com/3/upload", {
+      method: "POST",
+      headers: { Authorization: `Client-ID ${process.env.IMGUR_CLIENT_ID}` },
+      body: new URLSearchParams({ image: base64Image }),
+    });
+
     const imgurData = await imgurResponse.json();
-    if (imgurData.success) res.json({ link: imgurData.data.link });
-    else res.status(500).json({ message: "Errore caricamento Imgur" });
-  } catch (err) { res.status(500).json({ message: err.message }); }
+    if (imgurData.success) {
+      res.json({ link: imgurData.data.link });
+    } else {
+      res.status(500).json({ message: "Errore caricamento Imgur" });
+    }
+
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
 });
 
 app.post("/add-info", verifyAdmin, async (req, res) => {
   const { title, message, type } = req.body;
   if (!title || !message) return res.status(400).json({ message: "Campi mancanti" });
-  const info = await Info.create({ title, message, type: type || "info", createdBy: req.user.schoolEmail });
-  res.status(201).json({ message: "Avviso aggiunto", info });
+
+  try {
+    const info = new Info({
+      title,
+      message,
+      type: type || "info",
+      createdBy: req.user.schoolEmail
+    });
+    await info.save();
+    res.status(201).json({ message: "Avviso aggiunto", info });
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
 });
 
-const requestCache = new Map();
-function cacheRequest(ttl = 5000) {
-  return (req, res, next) => {
-    const key = req.originalUrl + JSON.stringify(req.body || {});
-    const now = Date.now();
-    if (requestCache.has(key)) {
-      const { timestamp, data } = requestCache.get(key);
-      if (now - timestamp < ttl) return res.json(data);
-    }
-    const originalJson = res.json.bind(res);
-    res.json = (body) => { requestCache.set(key, { timestamp: now, data: body }); originalJson(body); };
-    next();
-  };
-}
-
-app.get("/get-info", cacheRequest(10000), async (req, res) => {
-  let page = parseInt(req.query.page) || 1;
-  const limit = 15;
-  const skip = (page - 1) * limit;
-
-  const infos = await Info.find({}, { createdBy: 0 })
-    .sort({ createdAt: -1 })
-    .skip(skip)
-    .limit(limit);
-
-  const total = await Info.countDocuments();
-
-  res.json({
-    infos,
-    total,
-    page,
-    totalPages: Math.ceil(total / limit)
-  });
+app.get("/get-info", async (req, res) => {
+  try {
+    const infos = await Info.find({}, { createdBy: 0 }) // 0 = false ovvero escludi
+      .sort({ createdAt: -1 })
+      .limit(15);
+    res.json({ infos });
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
 });
 
 app.get("/is-admin", async (req, res) => {
   const token = req.headers["authorization"]?.split(" ")[1];
   if (!token) return res.status(401).json({ message: "Token mancante" });
+
   try {
     const payload = jwt.verify(token, SECRET_KEY);
     const user = await User.findOne({ schoolEmail: payload.id });
     if (!user) return res.status(404).json({ message: "Utente non trovato" });
-    res.json({ isAdmin: user.isAdmin });
-  } catch { res.status(401).json({ message: "Token non valido" }); }
-});
 
-setInterval(() => {
-  const now = Date.now();
-  for (const [email, ts] of emailCooldown) if (now - ts > 10 * 60000) emailCooldown.delete(email);
-  for (const [email, data] of failedAttempts) if (data.lock < now) failedAttempts.delete(email);
-}, 5 * 60 * 1000);
+    res.json({ isAdmin: user.isAdmin });
+  } catch (err) {
+    res.status(401).json({ message: "Token non valido" });
+  }
+});
 
 app.listen(PORT);
