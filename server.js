@@ -7,6 +7,14 @@ const nodemailer = require("nodemailer");
 const rateLimit = require("express-rate-limit");
 const multer = require("multer");
 require("dotenv").config();
+const email = require("emailjs");
+
+const smtpClient = email.server.connect({
+  user: process.env.EMAIL_USER,
+  password: process.env.EMAIL_PASS,
+  host: "smtp.gmail.com",
+  ssl: true
+});
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -55,10 +63,6 @@ const createLimiter = (max) =>
   rateLimit({ windowMs: 60000, max, standardHeaders: true, legacyHeaders: false });
 
 const authLimiter = createLimiter(30);
-const transporter = nodemailer.createTransport({
-  service: "gmail",
-  auth: { user: process.env.EMAIL_USER, pass: process.env.EMAIL_PASS }
-});
 
 function verifyAdmin(req, res, next) {
   const token = req.headers["authorization"]?.split(" ")[1];
@@ -91,9 +95,23 @@ const sendMailWithTimeout = (mailOptions, timeout = 10000) => {
   console.log("➡️ [1] Inizio invio email con timeout…");
 
   return Promise.race([
-    transporter.sendMail(mailOptions).then(info => {
-      console.log("✔️ [2] Email inviata correttamente");
-      return info;
+    new Promise((resolve, reject) => {
+      smtpClient.send(
+        {
+          text: mailOptions.text,
+          from: mailOptions.from,
+          to: mailOptions.to,
+          subject: mailOptions.subject
+        },
+        (err, message) => {
+          if (err) {
+            console.log("⛔ Errore SMTP:", err.message);
+            return reject(err);
+          }
+          console.log("✔️ [2] Email inviata correttamente");
+          resolve(message);
+        }
+      );
     }),
     new Promise((_, reject) =>
       setTimeout(() => {
@@ -103,6 +121,7 @@ const sendMailWithTimeout = (mailOptions, timeout = 10000) => {
     )
   ]);
 };
+
 
 app.post("/register/request", async (req, res) => {
   console.log("\n===== RICHIESTA REGISTRAZIONE =====");
