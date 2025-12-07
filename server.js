@@ -51,6 +51,10 @@ const infoSchema = new mongoose.Schema({
 });
 const Info = mongoose.model("Info", infoSchema);
 
+function clearInfoCache() {
+  requestCache.delete("/get-info");
+}
+
 const createLimiter = (max) =>
   rateLimit({ windowMs: 60000, max, standardHeaders: true, legacyHeaders: false });
 
@@ -207,9 +211,37 @@ app.post("/upload-imgur", upload.single("image"), async (req, res) => {
 
 app.post("/add-info", verifyAdmin, async (req, res) => {
   const { title, message, type } = req.body;
-  if (!title || !message) return res.status(400).json({ message: "Campi mancanti" });
-  const info = await Info.create({ title, message, type: type || "info", createdBy: req.user.schoolEmail });
+
+  if (!title || !message) {
+    return res.status(400).json({ message: "Campi mancanti" });
+  }
+
+  const info = await Info.create({
+    title,
+    message,
+    type: type || "info",
+    createdBy: req.user.schoolEmail
+  });
+
+  clearInfoCache();
+
   res.status(201).json({ message: "Avviso aggiunto", info });
+});
+
+app.post("/delete-info", verifyAdmin, async (req, res) => {
+  const { id } = req.body;
+
+  if (!id) return res.status(400).json({ message: "ID mancante" });
+
+  const deleted = await Info.findByIdAndDelete(id);
+
+  if (!deleted) {
+    return res.status(404).json({ message: "Post non trovato" });
+  }
+
+  clearInfoCache();
+
+  res.json({ message: "Post eliminato", deleted });
 });
 
 const requestCache = new Map();
