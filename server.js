@@ -154,6 +154,28 @@ app.post("/delete-info", verifyAdmin, async (req,res)=>{
   res.json({ message:"Post eliminato", deleted });
 });
 
+app.post("/update-info", verifyAdmin, async (req, res) => {
+  const { id, title, message, type } = req.body;
+
+  if (!id) return res.status(400).json({ message: "ID mancante" });
+  if (!title || !message || !type) return res.status(400).json({ message: "Campi mancanti" });
+
+  try {
+    const updated = await Info.findByIdAndUpdate(
+      id,
+      { title, message, type },
+      { new: true }
+    );
+
+    if (!updated) return res.status(404).json({ message: "Post non trovato" });
+
+    clearInfoCache();
+    res.json({ message: "Avviso aggiornato", info: updated });
+  } catch (e) {
+    res.status(500).json({ message: e.message });
+  }
+});
+
 app.get("/get-info", cacheRequest(10000), async (req,res)=>{
   let page=parseInt(req.query.page)||1;
   const limit=15;
