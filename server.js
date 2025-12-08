@@ -19,8 +19,17 @@ mongoose.connect(process.env.MONGO_URI);
 
 const emailCooldown = new Map();
 const failedAttempts = new Map();
+const requestCache = new Map();
 
-const userSchema = new mongoose.Schema({ firstName: { type: String, required: true }, lastName: { type: String, required: true }, instagram: String, schoolEmail: { type: String, unique: true, required: true }, password: { type: String, required: true }, profileImage: String, isAdmin: { type: Boolean, default: false } });
+const userSchema = new mongoose.Schema({
+  firstName: { type: String, required: true },
+  lastName: { type: String, required: true },
+  instagram: String,
+  schoolEmail: { type: String, unique: true, required: true },
+  password: { type: String, required: true },
+  profileImage: String,
+  isAdmin: { type: Boolean, default: false }
+});
 const User = mongoose.model("User", userSchema);
 
 const codeSchema = new mongoose.Schema({ schoolEmail: { type: String, required: true }, code: String, expiresAt: Date });
@@ -32,7 +41,6 @@ const Info = mongoose.model("Info", infoSchema);
 const bookSchema = new mongoose.Schema({ title: { type: String, required: true }, condition: { type: String }, price: { type: Number, required: true }, subject: { type: String }, grade: { type: String }, images: [String], likes: { type: Number, default: 0 }, likedBy: [String], createdAt: { type: Date, default: Date.now }, createdBy: String });
 const Book = mongoose.model("Book", bookSchema);
 
-const requestCache = new Map();
 function cacheRequest(ttl = 5000) {
   return (req, res, next) => {
     const key = req.originalUrl + JSON.stringify(req.query || {}) + JSON.stringify(req.body || {});
@@ -48,24 +56,28 @@ function cacheRequest(ttl = 5000) {
 }
 
 function clearInfoCache() { for (const key of requestCache.keys()) if (key.startsWith("/get-info")) requestCache.delete(key); }
-function clearBookCache() { for (const key of requestCache.keys()) if (key.startsWith("/books")) requestCache.delete(key); }
+function clearBookCache() { for (const key of requestCache.keys()) if (key.startsWith("/get-books")) requestCache.delete(key); }
 
 const createLimiter = (max) => rateLimit({ windowMs: 60000, max, standardHeaders: true, legacyHeaders: false });
 const authLimiter = createLimiter(30);
+
 const transporter = nodemailer.createTransport({ service: "gmail", auth: { user: process.env.EMAIL_USER, pass: process.env.EMAIL_PASS } });
 
-function verifyAdmin(req,res,next){
+function verifyUser(req,res,next){
   const token = req.headers["authorization"]?.split(" ")[1];
   if(!token) return res.status(401).json({ message: "Token mancante" });
   try{
     const payload = jwt.verify(token, SECRET_KEY);
     User.findOne({ schoolEmail: payload.id }).then(user=>{
       if(!user) return res.status(401).json({ message: "Utente non trovato" });
-      if(!user.isAdmin) return res.status(403).json({ message: "Non sei admin" });
       req.user = user;
       next();
     });
   } catch { return res.status(401).json({ message: "Token non valido" }); }
+}
+
+function verifyAdmin(req,res,next){
+  verifyUser(req,res,()=>{ if(!req.user.isAdmin) return res.status(403).json({ message:"Non sei admin" }); next(); });
 }
 
 function generateCode(){ const chars="ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"; let c=""; for(let i=0;i<6;i++) c+=chars[Math.floor(Math.random()*chars.length)]; return c; }
@@ -109,30 +121,36 @@ app.post("/register/verify", authLimiter, async (req,res)=>{
 app.post("/login", authLimiter, async (req,res)=>{
   const { schoolEmail,password }=req.body;
   if(!schoolEmail||!password) return res.status(400).json({ message:"Campi mancanti" });
+  const key=schoolEmail;
+  const fail=failedAttempts.get(key)||{ count:0, lock:0 };
+  if(fail.lock>Date.now()) return res.status(429).json({ message:"Bloccato temporaneamente" });
   const user = await User.findOne({ schoolEmail });
-  if(!user) return res.status(400).json({ message:"Credenziali errate" });
+  if(!user) { fail.count++; failedAttempts.set(key,fail); return res.status(400).json({ message:"Credenziali errate" }); }
   const match = await bcrypt.compare(password,user.password);
-  if(!match) return res.status(400).json({ message:"Credenziali errate" });
+  if(!match) { fail.count++; failedAttempts.set(key,fail); return res.status(400).json({ message:"Credenziali errate" }); }
+  failedAttempts.delete(key);
   const token = jwt.sign({ id: schoolEmail }, SECRET_KEY);
   res.json({ message:"Login riuscito", token, firstName:user.firstName,lastName:user.lastName,instagram:user.instagram||"",schoolEmail:user.schoolEmail,profileImage:user.profileImage||"" });
 });
 
-app.post("/logout", async (req,res)=>res.json({ message:"Logout effettuato" }));
+app.post("/logout", (req,res)=>res.json({ message:"Logout effettuato" }));
 
 app.post("/admin/clean-codes", verifyAdmin, async (req,res)=>{ const result=await VerificationCode.deleteMany({ expiresAt:{ $lt:new Date() } }); res.json({ eliminati:result.deletedCount }); });
 
 const storage = multer.memoryStorage();
 const upload = multer({ storage, limits:{ fileSize:2*1024*1024 } });
 
-app.post("/upload-imgur", upload.single("image"), async (req,res)=>{
+app.post("/upload-imgur", verifyUser, upload.single("image"), async (req,res)=>{
   if(!req.file) return res.status(400).json({ message:"File mancante" });
   try{
     const fetch=(await import("node-fetch")).default;
     const boundary="----WebKitFormBoundaryCheckNSFW";
     const body=Buffer.concat([Buffer.from(`--${boundary}\r\n`),Buffer.from(`Content-Disposition: form-data; name="nudepic"; filename="${req.file.originalname}"\r\n`),Buffer.from(`Content-Type: ${req.file.mimetype}\r\n\r\n`),req.file.buffer,Buffer.from(`\r\n--${boundary}--\r\n`)]);
+
     const nsfwResponse=await fetch("https://letspurify.askjitendra.com/send/data",{ method:"POST", headers:{"accept":"*/*","content-type":`multipart/form-data; boundary=${boundary}`}, body });
     const nsfwData=await nsfwResponse.json();
     if(nsfwData.status) return res.status(400).json({ message:"L'immagine non è consentita" });
+
     const base64Image=req.file.buffer.toString("base64");
     const imgurResponse=await fetch("https://api.imgur.com/3/upload",{ method:"POST", headers:{ Authorization:`Client-ID ${process.env.IMGUR_CLIENT_ID}` }, body:new URLSearchParams({ image:base64Image }) });
     const imgurData=await imgurResponse.json();
@@ -158,26 +176,13 @@ app.post("/delete-info", verifyAdmin, async (req,res)=>{
   res.json({ message:"Post eliminato", deleted });
 });
 
-app.post("/update-info", verifyAdmin, async (req, res) => {
+app.post("/update-info", verifyAdmin, async (req,res)=>{
   const { id, title, message, type } = req.body;
-
-  if (!id) return res.status(400).json({ message: "ID mancante" });
-  if (!title || !message || !type) return res.status(400).json({ message: "Campi mancanti" });
-
-  try {
-    const updated = await Info.findByIdAndUpdate(
-      id,
-      { title, message, type },
-      { new: true }
-    );
-
-    if (!updated) return res.status(404).json({ message: "Post non trovato" });
-
-    clearInfoCache();
-    res.json({ message: "Avviso aggiornato", info: updated });
-  } catch (e) {
-    res.status(500).json({ message: e.message });
-  }
+  if(!id||!title||!message||!type) return res.status(400).json({ message:"Campi mancanti" });
+  const updated = await Info.findByIdAndUpdate(id,{ title,message,type },{ new:true });
+  if(!updated) return res.status(404).json({ message:"Post non trovato" });
+  clearInfoCache();
+  res.json({ message:"Avviso aggiornato", info:updated });
 });
 
 app.get("/get-info", cacheRequest(10000), async (req,res)=>{
@@ -189,94 +194,35 @@ app.get("/get-info", cacheRequest(10000), async (req,res)=>{
   res.json({ infos,total,page,totalPages:Math.ceil(total/limit) });
 });
 
-app.get("/is-admin", async (req,res)=>{
-  const token=req.headers["authorization"]?.split(" ")[1];
-  if(!token) return res.status(401).json({ message:"Token mancante" });
-  try{
-    const payload=jwt.verify(token,SECRET_KEY);
-    const user=await User.findOne({ schoolEmail:payload.id });
-    if(!user) return res.status(404).json({ message:"Utente non trovato" });
-    res.json({ isAdmin:user.isAdmin });
-  } catch{ res.status(401).json({ message:"Token non valido" }); }
-});
+app.get("/is-admin", verifyUser, async (req,res)=> res.json({ isAdmin:req.user.isAdmin }));
 
-app.get("/books", cacheRequest(10000), async (req, res) => {
+app.get("/get-books", cacheRequest(10000), async (req, res) => {
   const { condition, subject, grade, search, minPrice, maxPrice } = req.query;
-
   let query = {};
   if (condition && condition !== "Tutte") query.condition = condition;
   if (subject && subject !== "Tutte") query.subject = subject;
   if (grade && grade !== "Tutte") query.grade = grade;
   if (search) query.title = { $regex: search, $options: "i" };
   if (minPrice && maxPrice) query.price = { $gte: Number(minPrice), $lte: Number(maxPrice) };
-
   const books = await Book.find(query).sort({ createdAt: -1 });
   res.json(books);
 });
 
-app.post("/books", async (req, res) => {
-  try {
-    const token = req.headers["authorization"]?.split(" ")[1];
-    if (!token) return res.status(401).json({ message: "Token mancante" });
-
-    let user;
-    try {
-      const payload = jwt.verify(token, SECRET_KEY);
-      user = await User.findOne({ schoolEmail: payload.id });
-      if (!user) return res.status(401).json({ message: "Utente non trovato" });
-    } catch {
-      return res.status(401).json({ message: "Token non valido" });
-    }
-
-    const { title, condition, price, subject, grade, images } = req.body;
-
-    if (!title || !condition || !price || !subject || !grade || !images) {
-      return res.status(400).json({ message: "Tutti i campi sono obbligatori" });
-    }
-
-    if (
-      typeof title !== "string" ||
-      typeof condition !== "string" ||
-      typeof price !== "number" ||
-      typeof subject !== "string" ||
-      typeof grade !== "string" ||
-      !Array.isArray(images)
-    ) {
-      return res.status(400).json({ message: "Invalid data types" });
-    }
-
-    const newBook = await Book.create({
-      title,
-      condition,
-      price,
-      subject,
-      grade,
-      images,
-      likes: 0,
-      likedBy: [],
-      createdBy: user.schoolEmail,
-      createdAt: new Date(),
-    });
-
-    clearBookCache();
-
-    res.status(201).json(newBook);
-
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ message: "Errore", error: err.message });
-  }
+app.post("/add-books", verifyUser, async (req, res) => {
+  const { title, condition, price, subject, grade, images } = req.body;
+  if (!title || !condition || !price || !subject || !grade || !images) return res.status(400).json({ message: "Tutti i campi sono obbligatori" });
+  if (typeof title !== "string" || typeof condition !== "string" || typeof price !== "number" || typeof subject !== "string" || typeof grade !== "string" || !Array.isArray(images)) return res.status(400).json({ message: "Invalid data types" });
+  const newBook = await Book.create({ title, condition, price, subject, grade, images, likes:0, likedBy:[], createdBy:req.user.schoolEmail, createdAt:new Date() });
+  clearBookCache();
+  res.status(201).json(newBook);
 });
 
-
-app.post("/books/like", async (req,res) => {
-  const { bookId, userEmail } = req.body;
+app.post("/books/like", verifyUser, async (req,res) => {
+  const { bookId } = req.body;
   const book = await Book.findById(bookId);
-  if (!book) return res.status(404).json({ message: "Libro non trovato" });
-
-  if (book.likedBy.includes(userEmail)) { book.likedBy = book.likedBy.filter(e=>e!==userEmail); book.likes--; }
-  else { book.likedBy.push(userEmail); book.likes++; }
-
+  if(!book) return res.status(404).json({ message: "Libro non trovato" });
+  if(book.likedBy.includes(req.user.schoolEmail)){ book.likedBy = book.likedBy.filter(e=>e!==req.user.schoolEmail); book.likes--; }
+  else{ book.likedBy.push(req.user.schoolEmail); book.likes++; }
   await book.save();
   clearBookCache();
   res.json(book);
