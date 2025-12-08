@@ -29,6 +29,9 @@ const VerificationCode = mongoose.model("VerificationCode", codeSchema);
 const infoSchema = new mongoose.Schema({ title: { type: String, required: true }, message: { type: String, required: true }, type: { type: String, enum: ["info","alert"], default: "info" }, createdAt: { type: Date, default: Date.now }, createdBy: String });
 const Info = mongoose.model("Info", infoSchema);
 
+const bookSchema = new mongoose.Schema({ title: { type: String, required: true }, condition: { type: String }, price: { type: Number, required: true }, subject: { type: String }, grade: { type: String }, images: [String], likes: { type: Number, default: 0 }, likedBy: [String], createdAt: { type: Date, default: Date.now }, createdBy: String });
+const Book = mongoose.model("Book", bookSchema);
+
 const requestCache = new Map();
 function cacheRequest(ttl = 5000) {
   return (req, res, next) => {
@@ -45,6 +48,7 @@ function cacheRequest(ttl = 5000) {
 }
 
 function clearInfoCache() { for (const key of requestCache.keys()) if (key.startsWith("/get-info")) requestCache.delete(key); }
+function clearBookCache() { for (const key of requestCache.keys()) if (key.startsWith("/books")) requestCache.delete(key); }
 
 const createLimiter = (max) => rateLimit({ windowMs: 60000, max, standardHeaders: true, legacyHeaders: false });
 const authLimiter = createLimiter(30);
@@ -194,6 +198,88 @@ app.get("/is-admin", async (req,res)=>{
     if(!user) return res.status(404).json({ message:"Utente non trovato" });
     res.json({ isAdmin:user.isAdmin });
   } catch{ res.status(401).json({ message:"Token non valido" }); }
+});
+
+app.get("/books", cacheRequest(10000), async (req, res) => {
+  const { condition, subject, grade, search, minPrice, maxPrice } = req.query;
+
+  let query = {};
+  if (condition && condition !== "Tutte") query.condition = condition;
+  if (subject && subject !== "Tutte") query.subject = subject;
+  if (grade && grade !== "Tutte") query.grade = grade;
+  if (search) query.title = { $regex: search, $options: "i" };
+  if (minPrice && maxPrice) query.price = { $gte: Number(minPrice), $lte: Number(maxPrice) };
+
+  const books = await Book.find(query).sort({ createdAt: -1 });
+  res.json(books);
+});
+
+app.post("/books", async (req, res) => {
+  try {
+    const token = req.headers["authorization"]?.split(" ")[1];
+    if (!token) return res.status(401).json({ message: "Token mancante" });
+
+    let user;
+    try {
+      const payload = jwt.verify(token, SECRET_KEY);
+      user = await User.findOne({ schoolEmail: payload.id });
+      if (!user) return res.status(401).json({ message: "Utente non trovato" });
+    } catch {
+      return res.status(401).json({ message: "Token non valido" });
+    }
+
+    const { title, condition, price, subject, grade, images } = req.body;
+
+    if (!title || !condition || !price || !subject || !grade || !images) {
+      return res.status(400).json({ message: "Tutti i campi sono obbligatori" });
+    }
+
+    if (
+      typeof title !== "string" ||
+      typeof condition !== "string" ||
+      typeof price !== "number" ||
+      typeof subject !== "string" ||
+      typeof grade !== "string" ||
+      !Array.isArray(images)
+    ) {
+      return res.status(400).json({ message: "Invalid data types" });
+    }
+
+    const newBook = await Book.create({
+      title,
+      condition,
+      price,
+      subject,
+      grade,
+      images,
+      likes: 0,
+      likedBy: [],
+      createdBy: user.schoolEmail,
+      createdAt: new Date(),
+    });
+
+    clearBookCache();
+
+    res.status(201).json(newBook);
+
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ message: "Errore", error: err.message });
+  }
+});
+
+
+app.post("/books/like", async (req,res) => {
+  const { bookId, userEmail } = req.body;
+  const book = await Book.findById(bookId);
+  if (!book) return res.status(404).json({ message: "Libro non trovato" });
+
+  if (book.likedBy.includes(userEmail)) { book.likedBy = book.likedBy.filter(e=>e!==userEmail); book.likes--; }
+  else { book.likedBy.push(userEmail); book.likes++; }
+
+  await book.save();
+  clearBookCache();
+  res.json(book);
 });
 
 setInterval(()=>{
