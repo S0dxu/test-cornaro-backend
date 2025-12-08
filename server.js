@@ -7,9 +7,6 @@ const nodemailer = require("nodemailer");
 const rateLimit = require("express-rate-limit");
 const multer = require("multer");
 require("dotenv").config();
-const sharp = require("sharp");
-const { fetch, FormData } = require("undici");
-sharp.concurrency(1);
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -143,51 +140,23 @@ app.post("/admin/clean-codes", verifyAdmin, async (req,res)=>{ const result=awai
 const storage = multer.memoryStorage();
 const upload = multer({ storage, limits:{ fileSize:2*1024*1024 } });
 
-app.post("/upload-imgur", verifyUser, upload.single("image"), async (req, res) => {
-  if (!req.file) return res.status(400).json({ message: "File mancante" });
+app.post("/upload-imgur", verifyUser, upload.single("image"), async (req,res)=>{
+  if(!req.file) return res.status(400).json({ message:"File mancante" });
+  try{
+    const fetch=(await import("node-fetch")).default;
+    const boundary="----WebKitFormBoundaryCheckNSFW";
+    const body=Buffer.concat([Buffer.from(`--${boundary}\r\n`),Buffer.from(`Content-Disposition: form-data; name="nudepic"; filename="${req.file.originalname}"\r\n`),Buffer.from(`Content-Type: ${req.file.mimetype}\r\n\r\n`),req.file.buffer,Buffer.from(`\r\n--${boundary}--\r\n`)]);
 
-  try {
-    // 1) Ottimizza l'immagine (buffer -> buffer, senza conversione base64)
-    const optimizedBuffer = await sharp(req.file.buffer)
-      .resize({ width: 1024, withoutEnlargement: true }) // evita ingrandimenti inutili
-      .jpeg({ quality: 55, mozjpeg: true }) // buona qualità / peso contenuto
-      .toBuffer();
+    const nsfwResponse=await fetch("https://letspurify.askjitendra.com/send/data",{ method:"POST", headers:{"accept":"*/*","content-type":`multipart/form-data; boundary=${boundary}`}, body });
+    const nsfwData=await nsfwResponse.json();
+    if(nsfwData.status) return res.status(400).json({ message:"L'immagine non è consentita" });
 
-    // 2) Invia direttamente come multipart/form-data usando FormData streaming
-    const form = new FormData();
-    // notare: passiamo direttamente il Buffer, undici gestisce lo stream
-    form.append("image", optimizedBuffer, {
-      filename: req.file.originalname,
-      contentType: req.file.mimetype,
-    });
-
-    const imgurResp = await fetch("https://api.imgur.com/3/upload", {
-      method: "POST",
-      headers: {
-        Authorization: `Client-ID ${process.env.IMGUR_CLIENT_ID}`,
-        // NOTA: non impostare Content-Type manualmente, FormData lo gestisce
-      },
-      body: form,
-    });
-
-    // gestione errori di rete / status
-    if (!imgurResp.ok) {
-      const text = await imgurResp.text().catch(() => "");
-      return res.status(500).json({ message: `Imgur error: ${imgurResp.status} ${text}` });
-    }
-
-    const imgurData = await imgurResp.json();
-    if (imgurData && imgurData.success && imgurData.data && imgurData.data.link) {
-      return res.json({ link: imgurData.data.link });
-    }
-
-    // fallback: errore imprevisto
-    return res.status(500).json({ message: "Errore caricamento Imgur" });
-  } catch (err) {
-    // log utile per debug su Render (puoi rimuovere o ridurre in produzione)
-    console.error("upload-imgur error:", err);
-    return res.status(500).json({ message: err.message || "Errore server" });
-  }
+    const base64Image=req.file.buffer.toString("base64");
+    const imgurResponse=await fetch("https://api.imgur.com/3/upload",{ method:"POST", headers:{ Authorization:`Client-ID ${process.env.IMGUR_CLIENT_ID}` }, body:new URLSearchParams({ image:base64Image }) });
+    const imgurData=await imgurResponse.json();
+    if(imgurData.success) res.json({ link:imgurData.data.link });
+    else res.status(500).json({ message:"Errore caricamento Imgur" });
+  } catch(e){ res.status(500).json({ message:e.message }); }
 });
 
 app.post("/add-info", verifyAdmin, async (req,res)=>{
