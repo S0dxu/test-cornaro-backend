@@ -197,16 +197,59 @@ app.get("/get-info", cacheRequest(10000), async (req,res)=>{
 app.get("/is-admin", verifyUser, async (req,res)=> res.json({ isAdmin:req.user.isAdmin }));
 
 app.get("/get-books", cacheRequest(10000), async (req, res) => {
-  const { condition, subject, grade, search, minPrice, maxPrice } = req.query;
-  let query = {};
-  if (condition && condition !== "Tutte") query.condition = condition;
-  if (subject && subject !== "Tutte") query.subject = subject;
-  if (grade && grade !== "Tutte") query.grade = grade;
-  if (search) query.title = { $regex: search, $options: "i" };
-  if (minPrice && maxPrice) query.price = { $gte: Number(minPrice), $lte: Number(maxPrice) };
-  const books = await Book.find(query).sort({ createdAt: -1 });
-  res.json(books);
+  try {
+    const {
+      condition,
+      subject,
+      grade,
+      search,
+      minPrice,
+      maxPrice,
+      page
+    } = req.query;
+
+    const currentPage = Math.max(parseInt(page) || 1, 1);
+    const limit = BOOKS_PER_PAGE;
+    const skip = (currentPage - 1) * limit;
+
+    let query = {};
+
+    if (condition && condition !== "Tutte") query.condition = condition;
+    if (subject && subject !== "Tutte") query.subject = subject;
+    if (grade && grade !== "Tutte") query.grade = grade;
+
+    if (search) {
+      query.$or = [
+        { title: { $regex: search, $options: "i" } },
+        { subject: { $regex: search, $options: "i" } }
+      ];
+    }
+
+    if (minPrice || maxPrice) {
+      query.price = {};
+      if (minPrice) query.price.$gte = Number(minPrice);
+      if (maxPrice) query.price.$lte = Number(maxPrice);
+    }
+
+    const [books, total] = await Promise.all([
+      Book.find(query)
+        .sort({ createdAt: -1 })
+        .skip(skip)
+        .limit(limit),
+      Book.countDocuments(query)
+    ]);
+
+    res.json({
+      books,
+      total,
+      page: currentPage,
+      totalPages: Math.ceil(total / limit),
+    });
+  } catch (e) {
+    res.status(500).json({ message: "Errore caricamento libri" });
+  }
 });
+
 
 app.post("/add-books", verifyUser, async (req, res) => {
   const { title, condition, price, subject, grade, images } = req.body;
