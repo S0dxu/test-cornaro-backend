@@ -209,7 +209,7 @@ app.get("/get-books", cacheRequest(10000), async (req, res) => {
     } = req.query;
 
     const currentPage = Math.max(parseInt(page) || 1, 1);
-    const limit = BOOKS_PER_PAGE;
+    const limit = 16;
     const skip = (currentPage - 1) * limit;
 
     let query = {};
