@@ -205,7 +205,6 @@ app.get("/get-books", cacheRequest(10000), async (req, res) => {
       search,
       minPrice,
       maxPrice,
-      createdBy,
       page
     } = req.query;
 
@@ -273,13 +272,25 @@ app.post("/books/like", verifyUser, async (req,res) => {
 });
 
 app.get("/profile/:email", verifyUser, cacheRequest(10000), async (req, res) => {
-  const user = await User.findOne(
-    { schoolEmail: req.params.email },
-    "firstName lastName profileImage instagram"
-  );
-  if (!user) return res.status(404).json({ message: "Utente non trovato" });
-  res.json(user);
+  try {
+    const user = await User.findOne(
+      { schoolEmail: req.params.email },
+      { firstName: 1, lastName: 1, profileImage: 1, instagram: 1, isReliable: 1 }
+    );
+
+    if (!user) {
+      return res.status(404).json({ message: "Utente non trovato" });
+    }
+
+    return res.status(200).json(user);
+  } catch (error) {
+    console.error("Errore nel recupero del profilo:", error);
+    return res
+      .status(500)
+      .json({ message: "Errore interno del server", error: error.message });
+  }
 });
+
 
 setInterval(()=>{
   const now=Date.now();
