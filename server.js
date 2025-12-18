@@ -271,6 +271,15 @@ app.post("/books/like", verifyUser, async (req,res) => {
   res.json(book);
 });
 
+app.get("/profile/:email", verifyUser, cacheRequest(10000), async (req, res) => {
+  const user = await User.findOne(
+    { schoolEmail: req.params.email },
+    "firstName lastName profileImage instagram"
+  );
+  if (!user) return res.status(404).json({ message: "Utente non trovato" });
+  res.json(user);
+});
+
 setInterval(()=>{
   const now=Date.now();
   for(const [email,ts] of emailCooldown) if(now-ts>10*60000) emailCooldown.delete(email);
