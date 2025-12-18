@@ -220,7 +220,7 @@ app.get("/get-books", cacheRequest(10000), async (req, res) => {
     if (grade && grade !== "Tutte") query.grade = grade;
 
     if (createdBy) {
-      query.createdBy = createdBy;
+      query.createdBy = createdBy; 
     }
 
     if (search) {
