@@ -206,12 +206,13 @@ app.get("/get-books", cacheRequest(10000), async (req, res) => {
       minPrice,
       maxPrice,
       page,
+      limit,
       createdBy
     } = req.query;
 
     const currentPage = Math.max(parseInt(page) || 1, 1);
-    const limit = 16;
-    const skip = (currentPage - 1) * limit;
+    const booksLimit = Math.max(parseInt(limit) || 16, 1);
+    const skip = (currentPage - 1) * booksLimit;
 
     let query = {};
 
@@ -240,7 +241,7 @@ app.get("/get-books", cacheRequest(10000), async (req, res) => {
       Book.find(query)
         .sort({ createdAt: -1 })
         .skip(skip)
-        .limit(limit),
+        .limit(booksLimit),
       Book.countDocuments(query)
     ]);
 
@@ -248,9 +249,10 @@ app.get("/get-books", cacheRequest(10000), async (req, res) => {
       books,
       total,
       page: currentPage,
-      totalPages: Math.ceil(total / limit),
+      totalPages: Math.ceil(total / booksLimit),
     });
   } catch (e) {
+    console.error(e);
     res.status(500).json({ message: "Errore caricamento libri" });
   }
 });
