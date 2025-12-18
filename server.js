@@ -205,7 +205,8 @@ app.get("/get-books", cacheRequest(10000), async (req, res) => {
       search,
       minPrice,
       maxPrice,
-      page
+      page,
+      createdBy
     } = req.query;
 
     const currentPage = Math.max(parseInt(page) || 1, 1);
@@ -217,6 +218,10 @@ app.get("/get-books", cacheRequest(10000), async (req, res) => {
     if (condition && condition !== "Tutte") query.condition = condition;
     if (subject && subject !== "Tutte") query.subject = subject;
     if (grade && grade !== "Tutte") query.grade = grade;
+
+    if (createdBy) {
+      query.createdBy = createdBy;
+    }
 
     if (search) {
       query.$or = [
@@ -249,7 +254,6 @@ app.get("/get-books", cacheRequest(10000), async (req, res) => {
     res.status(500).json({ message: "Errore caricamento libri" });
   }
 });
-
 
 app.post("/add-books", verifyUser, async (req, res) => {
   const { title, condition, price, subject, grade, images } = req.body;
