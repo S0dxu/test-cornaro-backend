@@ -205,6 +205,7 @@ app.get("/get-books", cacheRequest(10000), async (req, res) => {
       search,
       minPrice,
       maxPrice,
+      createdBy,
       page
     } = req.query;
 
