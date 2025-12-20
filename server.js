@@ -28,7 +28,10 @@ const userSchema = new mongoose.Schema({
   schoolEmail: { type: String, unique: true, required: true },
   password: { type: String, required: true },
   profileImage: String,
-  isAdmin: { type: Boolean, default: false }
+  isAdmin: { type: Boolean, default: false },
+  averageRating: { type: Number, default: 0 },
+  ratingsCount: { type: Number, default: 0 },
+  isReliable: { type: Boolean, default: false }
 });
 const User = mongoose.model("User", userSchema);
 
@@ -41,9 +44,22 @@ const Info = mongoose.model("Info", infoSchema);
 const bookSchema = new mongoose.Schema({ title: { type: String, required: true }, condition: { type: String }, price: { type: Number, required: true }, subject: { type: String }, grade: { type: String }, images: [String], likes: { type: Number, default: 0 }, likedBy: [String], createdAt: { type: Date, default: Date.now }, createdBy: String });
 const Book = mongoose.model("Book", bookSchema);
 
+const reviewSchema = new mongoose.Schema({
+  reviewer: { type: String, required: true },
+  seller: { type: String, required: true },
+  rating: { type: Number, min: 1, max: 5, required: true },
+  comment: { type: String, maxlength: 500 },
+  createdAt: { type: Date, default: Date.now }
+});
+reviewSchema.index(
+  { reviewer: 1, seller: 1 },
+  { unique: true }
+);
+const Review = mongoose.model("Review", reviewSchema);
+
 function cacheRequest(ttl = 5000) {
   return (req, res, next) => {
-    const key = req.originalUrl + JSON.stringify(req.query || {}) + JSON.stringify(req.body || {});
+    const key = req.originalUrl + JSON.stringify(req.query || {});
     const now = Date.now();
     if (requestCache.has(key)) {
       const { timestamp, data } = requestCache.get(key);
@@ -57,6 +73,7 @@ function cacheRequest(ttl = 5000) {
 
 function clearInfoCache() { for (const key of requestCache.keys()) if (key.startsWith("/get-info")) requestCache.delete(key); }
 function clearBookCache() { for (const key of requestCache.keys()) if (key.startsWith("/get-books")) requestCache.delete(key); }
+function clearReviewCache(seller) {for (const key of requestCache.keys()) { if (key.startsWith(`/reviews/${seller}`)) { requestCache.delete(key); }}}
 
 const createLimiter = (max) => rateLimit({ windowMs: 60000, max, standardHeaders: true, legacyHeaders: false });
 const authLimiter = createLimiter(30);
@@ -304,6 +321,87 @@ app.get("/profile/:email", verifyUser, cacheRequest(10000), async (req, res) => 
     });
   }
 });
+
+app.get(
+  "/reviews/:seller",
+  cacheRequest(15000),
+  async (req, res) => {
+    const seller = req.params.seller;
+
+    const reviews = await Review.find(
+      { seller },
+      { reviewer: 1, rating: 1, comment: 1, createdAt: 1 }
+    )
+      .sort({ createdAt: -1 })
+      .limit(50);
+
+    res.json(reviews);
+  }
+);
+
+const reviewLimiter = createLimiter(10);
+
+app.post("/reviews/add", verifyUser, reviewLimiter, async (req, res) => {
+  const { seller, rating, comment } = req.body;
+
+  if (!seller || !rating)
+    return res.status(400).json({ message: "Dati mancanti" });
+
+  if (seller === req.user.schoolEmail)
+    return res.status(400).json({ message: "Non puoi recensire te stesso" });
+
+  if (rating < 1 || rating > 5)
+    return res.status(400).json({ message: "Rating non valido" });
+
+  try {
+    await Review.create({
+      reviewer: req.user.schoolEmail,
+      seller,
+      rating,
+      comment: comment || ""
+    });
+
+    const stats = await Review.aggregate([
+      { $match: { seller } },
+      {
+        $group: {
+          _id: null,
+          avg: { $avg: "$rating" },
+          count: { $sum: 1 }
+        }
+      }
+    ]);
+
+    const avg = stats.length ? stats[0].avg : 0;
+    const count = stats.length ? stats[0].count : 0;
+
+    await User.updateOne(
+      { schoolEmail: seller },
+      {
+        averageRating: avg,
+        ratingsCount: count,
+        isReliable: avg >= 4 && count >= 3
+      }
+    );
+
+    for (const key of requestCache.keys()) {
+      if (key.startsWith(`/profile/${seller}`)) {
+        requestCache.delete(key);
+      }
+    }
+
+    clearReviewCache(seller);
+
+    res.status(201).json({ message: "Recensione inviata" });
+
+  } catch (e) {
+    if (e.code === 11000)
+      return res.status(400).json({ message: "Hai già recensito questo venditore" });
+
+    res.status(500).json({ message: "Errore server" });
+  }
+});
+
 
 setInterval(()=>{
   const now=Date.now();
