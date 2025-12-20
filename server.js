@@ -254,8 +254,23 @@ app.get("/profile/:email", verifyUser, cacheRequest(10000), async (req, res) => 
 app.get("/reviews/:seller", cacheRequest(15000), async (req, res) => {
   const seller = req.params.seller;
   const reviews = await Review.find({ seller }, { reviewer: 1, rating: 1, comment: 1, createdAt: 1 }).sort({ createdAt: -1 }).limit(50);
-  res.json(reviews);
+
+  const reviewerEmails = [...new Set(reviews.map(r => r.reviewer))];
+  const users = await User.find({ schoolEmail: { $in: reviewerEmails } }, { firstName: 1, lastName: 1, profileImage: 1 }).lean();
+  const userMap = Object.fromEntries(users.map(u => [u.schoolEmail, u]));
+
+  const reviewsWithProfile = reviews.map(r => ({
+    rating: r.rating,
+    comment: r.comment,
+    createdAt: r.createdAt,
+    reviewerEmail: r.reviewer,
+    reviewerName: userMap[r.reviewer] ? `${userMap[r.reviewer].firstName} ${userMap[r.reviewer].lastName}` : r.reviewer,
+    reviewerImage: userMap[r.reviewer] ? userMap[r.reviewer].profileImage : null
+  }));
+
+  res.json(reviewsWithProfile);
 });
+
 
 const reviewLimiter = createLimiter(10);
 
