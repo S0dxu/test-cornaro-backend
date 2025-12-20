@@ -283,7 +283,7 @@ app.get("/profile/:email", verifyUser, cacheRequest(10000), async (req, res) => 
 
     const user = await User.findOne(
       { schoolEmail: email },
-      { firstName: 1, lastName: 1, profileImage: 1, instagram: 1, isReliable: 1 }
+      { firstName: 1, lastName: 1, profileImage: 1, instagram: 1, isReliable: 1, averageRating: 1, ratingsCount: 1 }
     ).lean();
 
     if (!user) {
