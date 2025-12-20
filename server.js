@@ -51,10 +51,7 @@ const reviewSchema = new mongoose.Schema({
   comment: { type: String, maxlength: 500 },
   createdAt: { type: Date, default: Date.now }
 });
-reviewSchema.index(
-  { reviewer: 1, seller: 1 },
-  { unique: true }
-);
+reviewSchema.index({ reviewer: 1, seller: 1 }, { unique: true });
 const Review = mongoose.model("Review", reviewSchema);
 
 function cacheRequest(ttl = 5000) {
@@ -73,7 +70,7 @@ function cacheRequest(ttl = 5000) {
 
 function clearInfoCache() { for (const key of requestCache.keys()) if (key.startsWith("/get-info")) requestCache.delete(key); }
 function clearBookCache() { for (const key of requestCache.keys()) if (key.startsWith("/get-books")) requestCache.delete(key); }
-function clearReviewCache(seller) {for (const key of requestCache.keys()) { if (key.startsWith(`/reviews/${seller}`)) { requestCache.delete(key); }}}
+function clearReviewCache(seller) { for (const key of requestCache.keys()) { if (key.includes(`/reviews/${seller}`)) { requestCache.delete(key); }}}
 
 const createLimiter = (max) => rateLimit({ windowMs: 60000, max, standardHeaders: true, legacyHeaders: false });
 const authLimiter = createLimiter(30);
@@ -99,7 +96,6 @@ function verifyAdmin(req,res,next){
 
 function generateCode(){ const chars="ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"; let c=""; for(let i=0;i<6;i++) c+=chars[Math.floor(Math.random()*chars.length)]; return c; }
 function isValidSchoolEmail(email){ email=email.normalize("NFKC").replace(/[^\x00-\x7F]/g,"").toLowerCase().trim(); if(/[\r\n]/.test(email)) return false; return /^[^@]+@studenti\.liceocornaro\.edu\.it$/.test(email); }
-
 const sendMailWithTimeout = (mailOptions, timeout=10000) => Promise.race([transporter.sendMail(mailOptions), new Promise((_, reject)=>setTimeout(()=>reject(new Error("Timeout invio email")), timeout))]);
 
 app.post("/register/request", async (req,res)=>{
@@ -163,11 +159,9 @@ app.post("/upload-imgur", verifyUser, upload.single("image"), async (req,res)=>{
     const fetch=(await import("node-fetch")).default;
     const boundary="----WebKitFormBoundaryCheckNSFW";
     const body=Buffer.concat([Buffer.from(`--${boundary}\r\n`),Buffer.from(`Content-Disposition: form-data; name="nudepic"; filename="${req.file.originalname}"\r\n`),Buffer.from(`Content-Type: ${req.file.mimetype}\r\n\r\n`),req.file.buffer,Buffer.from(`\r\n--${boundary}--\r\n`)]);
-
     const nsfwResponse=await fetch("https://letspurify.askjitendra.com/send/data",{ method:"POST", headers:{"accept":"*/*","content-type":`multipart/form-data; boundary=${boundary}`}, body });
     const nsfwData=await nsfwResponse.json();
     if(nsfwData.status) return res.status(400).json({ message:"L'immagine non è consentita" });
-
     const base64Image=req.file.buffer.toString("base64");
     const imgurResponse=await fetch("https://api.imgur.com/3/upload",{ method:"POST", headers:{ Authorization:`Client-ID ${process.env.IMGUR_CLIENT_ID}` }, body:new URLSearchParams({ image:base64Image }) });
     const imgurData=await imgurResponse.json();
@@ -215,69 +209,25 @@ app.get("/is-admin", verifyUser, async (req,res)=> res.json({ isAdmin:req.user.i
 
 app.get("/get-books", cacheRequest(10000), async (req, res) => {
   try {
-    const {
-      condition,
-      subject,
-      grade,
-      search,
-      minPrice,
-      maxPrice,
-      page,
-      limit,
-      createdBy
-    } = req.query;
-
+    const { condition, subject, grade, search, minPrice, maxPrice, page, limit, createdBy } = req.query;
     const currentPage = Math.max(parseInt(page) || 1, 1);
     const booksLimit = Math.max(parseInt(limit) || 16, 1);
     const skip = (currentPage - 1) * booksLimit;
-
     let query = {};
-
     if (condition && condition !== "Tutte") query.condition = condition;
     if (subject && subject !== "Tutte") query.subject = subject;
     if (grade && grade !== "Tutte") query.grade = grade;
-
-    if (createdBy) {
-      query.createdBy = createdBy; 
-    }
-
-    if (search) {
-      query.$or = [
-        { title: { $regex: search, $options: "i" } },
-        { subject: { $regex: search, $options: "i" } }
-      ];
-    }
-
-    if (minPrice || maxPrice) {
-      query.price = {};
-      if (minPrice) query.price.$gte = Number(minPrice);
-      if (maxPrice) query.price.$lte = Number(maxPrice);
-    }
-
-    const [books, total] = await Promise.all([
-      Book.find(query)
-        .sort({ createdAt: -1 })
-        .skip(skip)
-        .limit(booksLimit),
-      Book.countDocuments(query)
-    ]);
-
-    res.json({
-      books,
-      total,
-      page: currentPage,
-      totalPages: Math.ceil(total / booksLimit),
-    });
-  } catch (e) {
-    console.error(e);
-    res.status(500).json({ message: "Errore caricamento libri" });
-  }
+    if (createdBy) query.createdBy = createdBy; 
+    if (search) query.$or = [{ title: { $regex: search, $options: "i" } }, { subject: { $regex: search, $options: "i" } }];
+    if (minPrice || maxPrice) { query.price = {}; if (minPrice) query.price.$gte = Number(minPrice); if (maxPrice) query.price.$lte = Number(maxPrice); }
+    const [books, total] = await Promise.all([ Book.find(query).sort({ createdAt: -1 }).skip(skip).limit(booksLimit), Book.countDocuments(query) ]);
+    res.json({ books, total, page: currentPage, totalPages: Math.ceil(total / booksLimit) });
+  } catch (e) { res.status(500).json({ message: "Errore caricamento libri" }); }
 });
 
 app.post("/add-books", verifyUser, async (req, res) => {
   const { title, condition, price, subject, grade, images } = req.body;
   if (!title || !condition || !price || !subject || !grade || !images) return res.status(400).json({ message: "Tutti i campi sono obbligatori" });
-  if (typeof title !== "string" || typeof condition !== "string" || typeof price !== "number" || typeof subject !== "string" || typeof grade !== "string" || !Array.isArray(images)) return res.status(400).json({ message: "Invalid data types" });
   const newBook = await Book.create({ title, condition, price, subject, grade, images, likes:0, likedBy:[], createdBy:req.user.schoolEmail, createdAt:new Date() });
   clearBookCache();
   res.status(201).json(newBook);
@@ -295,113 +245,47 @@ app.post("/books/like", verifyUser, async (req,res) => {
 });
 
 app.get("/profile/:email", verifyUser, cacheRequest(10000), async (req, res) => {
-  try {
-    const email = req.params.email;
-
-    const user = await User.findOne(
-      { schoolEmail: email },
-      { firstName: 1, lastName: 1, profileImage: 1, instagram: 1, isReliable: 1, averageRating: 1, ratingsCount: 1 }
-    ).lean();
-
-    if (!user) {
-      return res.status(404).json({ message: "Utente non trovato" });
-    }
-
-    const response = {
-      ...user,
-      isReliable: user.isReliable ?? false
-    };
-
-    return res.status(200).json(response);
-  } catch (error) {
-    console.error("Errore nel recupero del profilo:", error);
-    return res.status(500).json({
-      message: "Errore interno del server",
-      error: error.message
-    });
-  }
+  const email = req.params.email;
+  const user = await User.findOne({ schoolEmail: email }, { firstName: 1, lastName: 1, profileImage: 1, instagram: 1, isReliable: 1, averageRating: 1, ratingsCount: 1 }).lean();
+  if (!user) return res.status(404).json({ message: "Utente non trovato" });
+  res.status(200).json({ ...user, isReliable: user.isReliable ?? false });
 });
 
-app.get(
-  "/reviews/:seller",
-  cacheRequest(15000),
-  async (req, res) => {
-    const seller = req.params.seller;
-
-    const reviews = await Review.find(
-      { seller },
-      { reviewer: 1, rating: 1, comment: 1, createdAt: 1 }
-    )
-      .sort({ createdAt: -1 })
-      .limit(50);
-
-    res.json(reviews);
-  }
-);
+app.get("/reviews/:seller", cacheRequest(15000), async (req, res) => {
+  const seller = req.params.seller;
+  const reviews = await Review.find({ seller }, { reviewer: 1, rating: 1, comment: 1, createdAt: 1 }).sort({ createdAt: -1 }).limit(50);
+  res.json(reviews);
+});
 
 const reviewLimiter = createLimiter(10);
 
 app.post("/reviews/add", verifyUser, reviewLimiter, async (req, res) => {
   const { seller, rating, comment } = req.body;
+  if (!seller || !rating) return res.status(400).json({ message: "Dati mancanti" });
+  if (!isValidSchoolEmail(seller)) return res.status(400).json({ message: "Email venditore non valida" });
+  if (seller === req.user.schoolEmail) return res.status(400).json({ message: "Non puoi recensire te stesso" });
+  if (rating < 1 || rating > 5) return res.status(400).json({ message: "Rating non valido" });
 
-  if (!seller || !rating)
-    return res.status(400).json({ message: "Dati mancanti" });
-
-  if (seller === req.user.schoolEmail)
-    return res.status(400).json({ message: "Non puoi recensire te stesso" });
-
-  if (rating < 1 || rating > 5)
-    return res.status(400).json({ message: "Rating non valido" });
+  const sellerUser = await User.findOne({ schoolEmail: seller });
+  if (!sellerUser) return res.status(404).json({ message: "Venditore inesistente" });
 
   try {
-    await Review.create({
-      reviewer: req.user.schoolEmail,
-      seller,
-      rating,
-      comment: comment || ""
-    });
+    await Review.create({ reviewer: req.user.schoolEmail, seller, rating, comment: comment || "" });
 
-    const stats = await Review.aggregate([
-      { $match: { seller } },
-      {
-        $group: {
-          _id: null,
-          avg: { $avg: "$rating" },
-          count: { $sum: 1 }
-        }
-      }
-    ]);
-
+    const stats = await Review.aggregate([{ $match: { seller } }, { $group: { _id: null, avg: { $avg: "$rating" }, count: { $sum: 1 } } }]);
     const avg = stats.length ? stats[0].avg : 0;
     const count = stats.length ? stats[0].count : 0;
 
-    await User.updateOne(
-      { schoolEmail: seller },
-      {
-        averageRating: avg,
-        ratingsCount: count,
-        isReliable: avg >= 4 && count >= 3
-      }
-    );
-
-    for (const key of requestCache.keys()) {
-      if (key.startsWith(`/profile/${seller}`)) {
-        requestCache.delete(key);
-      }
-    }
-
+    await User.updateOne({ schoolEmail: seller }, { averageRating: avg, ratingsCount: count, isReliable: avg >= 4 && count >= 3 });
     clearReviewCache(seller);
+    requestCache.delete(`/profile/${seller}`);
 
     res.status(201).json({ message: "Recensione inviata" });
-
   } catch (e) {
-    if (e.code === 11000)
-      return res.status(400).json({ message: "Hai già recensito questo venditore" });
-
+    if (e.code === 11000) return res.status(400).json({ message: "Hai già recensito questo venditore" });
     res.status(500).json({ message: "Errore server" });
   }
 });
-
 
 setInterval(()=>{
   const now=Date.now();
