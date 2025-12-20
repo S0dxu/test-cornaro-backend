@@ -49,7 +49,8 @@ const reviewSchema = new mongoose.Schema({
   seller: { type: String, required: true },
   rating: { type: Number, min: 1, max: 5, required: true },
   comment: { type: String, maxlength: 500 },
-  createdAt: { type: Date, default: Date.now }
+  createdAt: { type: Date, default: Date.now },
+  isAutomatic: { type: Boolean, default: false }
 });
 reviewSchema.index({ reviewer: 1, seller: 1 }, { unique: true });
 const Review = mongoose.model("Review", reviewSchema);
