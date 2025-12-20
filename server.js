@@ -52,7 +52,7 @@ const reviewSchema = new mongoose.Schema({
   createdAt: { type: Date, default: Date.now },
   isAutomatic: { type: Boolean, default: false }
 });
-reviewSchema.index({ reviewer: 1, seller: 1 }, { unique: true });
+reviewSchema.index({ reviewer: 1, seller: 1 });
 const Review = mongoose.model("Review", reviewSchema);
 
 function cacheRequest(ttl = 5000) {
@@ -286,9 +286,17 @@ app.post("/reviews/add", verifyUser, reviewLimiter, async (req, res) => {
   if (!sellerUser) return res.status(404).json({ message: "Venditore inesistente" });
 
   try {
-    await Review.create({ reviewer: req.user.schoolEmail, seller, rating, comment: comment || "" });
+    if (!req.user.isAdmin) {
+      const exists = await Review.findOne({ reviewer: req.user.schoolEmail, seller });
+      if (exists) return res.status(400).json({ message: "Hai già recensito questo venditore" });
+    }
 
-    const stats = await Review.aggregate([{ $match: { seller } }, { $group: { _id: null, avg: { $avg: "$rating" }, count: { $sum: 1 } } }]);
+    await Review.create({ reviewer: req.user.schoolEmail, seller, rating, comment: comment || "", isAutomatic: req.user.isAdmin });
+
+    const stats = await Review.aggregate([
+      { $match: { seller } },
+      { $group: { _id: null, avg: { $avg: "$rating" }, count: { $sum: 1 } } }
+    ]);
     const avg = stats.length ? stats[0].avg : 0;
     const count = stats.length ? stats[0].count : 0;
 
@@ -298,7 +306,6 @@ app.post("/reviews/add", verifyUser, reviewLimiter, async (req, res) => {
 
     res.status(201).json({ message: "Recensione inviata" });
   } catch (e) {
-    if (e.code === 11000) return res.status(400).json({ message: "Hai già recensito questo venditore" });
     res.status(500).json({ message: "Errore server" });
   }
 });
