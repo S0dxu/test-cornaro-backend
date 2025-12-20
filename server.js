@@ -77,17 +77,19 @@ const authLimiter = createLimiter(30);
 
 const transporter = nodemailer.createTransport({ service: "gmail", auth: { user: process.env.EMAIL_USER, pass: process.env.EMAIL_PASS } });
 
-function verifyUser(req,res,next){
+async function verifyUser(req, res, next) {
   const token = req.headers["authorization"]?.split(" ")[1];
-  if(!token) return res.status(401).json({ message: "Token mancante" });
-  try{
+  if (!token) return res.status(401).json({ message: "Token mancante" });
+
+  try {
     const payload = jwt.verify(token, SECRET_KEY);
-    User.findOne({ schoolEmail: payload.id }).then(user=>{
-      if(!user) return res.status(401).json({ message: "Utente non trovato" });
-      req.user = user;
-      next();
-    });
-  } catch { return res.status(401).json({ message: "Token non valido" }); }
+    const user = await User.findOne({ schoolEmail: payload.id });
+    if (!user) return res.status(401).json({ message: "Utente non trovato" });
+    req.user = user;
+    next();
+  } catch {
+    return res.status(401).json({ message: "Token non valido" });
+  }
 }
 
 function verifyAdmin(req,res,next){
@@ -253,17 +255,17 @@ app.get("/profile/:email", verifyUser, cacheRequest(10000), async (req, res) => 
 
 app.get("/reviews/:seller", cacheRequest(15000), async (req, res) => {
   const seller = req.params.seller;
-  const reviews = await Review.find({ seller }, { reviewer: 1, rating: 1, comment: 1, createdAt: 1, isAutomatic: 1 }).sort({ createdAt: -1 }).limit(50);
-
-  const reviewerEmails = [...new Set(reviews.map(r => r.reviewer))];
-  const users = await User.find({ schoolEmail: { $in: reviewerEmails } }, { firstName: 1, lastName: 1, profileImage: 1 }).lean();
+  const reviews = await Review.find(
+    { seller },
+    { reviewer: 1, rating: 1, comment: 1, createdAt: 1, isAutomatic: 1 }
+  ).sort({ createdAt: -1 }).limit(50);
 
   const reviewsWithProfile = reviews.map(r => ({
     rating: r.rating,
     comment: r.comment,
     createdAt: r.createdAt,
     reviewerEmail: r.reviewer,
-    isAutomatic: r.isAutomatic || false,
+    isAutomatic: r.isAutomatic !== undefined ? r.isAutomatic : false,
   }));
 
   res.json(reviewsWithProfile);
@@ -283,7 +285,7 @@ app.post("/reviews/add", verifyUser, reviewLimiter, async (req, res) => {
   if (!sellerUser) return res.status(404).json({ message: "Venditore inesistente" });
 
   try {
-    await Review.create({ reviewer: req.user.schoolEmail, seller, rating, comment: comment || "", isAutomatic: true });
+    await Review.create({ reviewer: req.user.schoolEmail, seller, rating, comment: comment || "" });
 
     const stats = await Review.aggregate([{ $match: { seller } }, { $group: { _id: null, avg: { $avg: "$rating" }, count: { $sum: 1 } } }]);
     const avg = stats.length ? stats[0].avg : 0;
