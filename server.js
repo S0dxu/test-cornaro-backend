@@ -264,8 +264,6 @@ app.get("/reviews/:seller", cacheRequest(15000), async (req, res) => {
     comment: r.comment,
     createdAt: r.createdAt,
     reviewerEmail: r.reviewer,
-    reviewerName: userMap[r.reviewer] ? `${userMap[r.reviewer].firstName} ${userMap[r.reviewer].lastName}` : r.reviewer,
-    reviewerImage: userMap[r.reviewer] ? userMap[r.reviewer].profileImage : null
   }));
 
   res.json(reviewsWithProfile);
