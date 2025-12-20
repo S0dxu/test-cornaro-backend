@@ -283,7 +283,7 @@ app.post("/reviews/add", verifyUser, reviewLimiter, async (req, res) => {
   if (!sellerUser) return res.status(404).json({ message: "Venditore inesistente" });
 
   try {
-    await Review.create({ reviewer: req.user.schoolEmail, seller, rating, comment: comment || "" });
+    await Review.create({ reviewer: req.user.schoolEmail, seller, rating, comment: comment || "", isAutomatic: true });
 
     const stats = await Review.aggregate([{ $match: { seller } }, { $group: { _id: null, avg: { $avg: "$rating" }, count: { $sum: 1 } } }]);
     const avg = stats.length ? stats[0].avg : 0;
