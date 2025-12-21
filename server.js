@@ -15,6 +15,26 @@ const SECRET_KEY = process.env.JWT_SECRET;
 app.use(express.json());
 app.use(cors({ origin: "*", methods: ["GET", "POST"], allowedHeaders: ["Content-Type", "Authorization"] }));
 
+
+const postLimiter = rateLimit({
+  windowMs: 1000,
+  max: 2,
+  standardHeaders: true,
+  legacyHeaders: false,
+  keyGenerator: (req) => {
+    if (req.user?.schoolEmail) return req.user.schoolEmail;
+    return req.ip;
+  },
+  handler: (req, res) => {
+    res.status(429).json({ message: "Limite richieste superato, riprova tra 1 secondo" });
+  }
+});
+
+app.use((req, res, next) => {
+  if (req.method === "POST") return postLimiter(req, res, next);
+  next();
+});
+
 mongoose.connect(process.env.MONGO_URI);
 
 const emailCooldown = new Map();
@@ -297,7 +317,6 @@ app.post("/books/like", verifyUser, async (req, res) => {
     createdAt: book.createdAt
   });
 });
-
 
 app.get("/profile/:email", verifyUser, cacheRequest(10000), async (req, res) => {
   const email = req.params.email;
