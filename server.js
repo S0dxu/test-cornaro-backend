@@ -210,22 +210,51 @@ app.get("/get-info", cacheRequest(10000), async (req,res)=>{
 
 app.get("/is-admin", verifyUser, async (req,res)=> res.json({ isAdmin:req.user.isAdmin }));
 
-app.get("/get-books", cacheRequest(10000), async (req, res) => {
+app.get("/get-books", verifyUser, cacheRequest(10000), async (req, res) => {
   try {
     const { condition, subject, grade, search, minPrice, maxPrice, page, limit, createdBy } = req.query;
     const currentPage = Math.max(parseInt(page) || 1, 1);
     const booksLimit = Math.max(parseInt(limit) || 16, 1);
     const skip = (currentPage - 1) * booksLimit;
+
     let query = {};
     if (condition && condition !== "Tutte") query.condition = condition;
     if (subject && subject !== "Tutte") query.subject = subject;
     if (grade && grade !== "Tutte") query.grade = grade;
-    if (createdBy) query.createdBy = createdBy; 
-    if (search) query.$or = [{ title: { $regex: search, $options: "i" } }, { subject: { $regex: search, $options: "i" } }];
-    if (minPrice || maxPrice) { query.price = {}; if (minPrice) query.price.$gte = Number(minPrice); if (maxPrice) query.price.$lte = Number(maxPrice); }
-    const [books, total] = await Promise.all([ Book.find(query).sort({ createdAt: -1 }).skip(skip).limit(booksLimit), Book.countDocuments(query) ]);
-    res.json({ books, total, page: currentPage, totalPages: Math.ceil(total / booksLimit) });
-  } catch (e) { res.status(500).json({ message: "Errore caricamento libri" }); }
+    if (createdBy) query.createdBy = createdBy;
+    if (search) query.$or = [
+      { title: { $regex: search, $options: "i" } },
+      { subject: { $regex: search, $options: "i" } }
+    ];
+    if (minPrice || maxPrice) {
+      query.price = {};
+      if (minPrice) query.price.$gte = Number(minPrice);
+      if (maxPrice) query.price.$lte = Number(maxPrice);
+    }
+
+    const [books, total] = await Promise.all([
+      Book.find(query).sort({ createdAt: -1 }).skip(skip).limit(booksLimit).lean(),
+      Book.countDocuments(query)
+    ]);
+
+    const booksWithLikes = books.map(book => ({
+      _id: book._id,
+      title: book.title,
+      condition: book.condition,
+      price: book.price,
+      subject: book.subject,
+      grade: book.grade,
+      images: book.images,
+      likes: book.likes,
+      likedByMe: book.likedBy.includes(req.user.schoolEmail),
+      createdBy: book.createdBy,
+      createdAt: book.createdAt,
+    }));
+
+    res.json({ books: booksWithLikes, total, page: currentPage, totalPages: Math.ceil(total / booksLimit) });
+  } catch (e) {
+    res.status(500).json({ message: "Errore caricamento libri" });
+  }
 });
 
 app.post("/add-books", verifyUser, async (req, res) => {
@@ -236,16 +265,39 @@ app.post("/add-books", verifyUser, async (req, res) => {
   res.status(201).json(newBook);
 });
 
-app.post("/books/like", verifyUser, async (req,res) => {
+app.post("/books/like", verifyUser, async (req, res) => {
   const { bookId } = req.body;
+  if (!bookId) return res.status(400).json({ message: "ID libro mancante" });
+
   const book = await Book.findById(bookId);
-  if(!book) return res.status(404).json({ message: "Libro non trovato" });
-  if(book.likedBy.includes(req.user.schoolEmail)){ book.likedBy = book.likedBy.filter(e=>e!==req.user.schoolEmail); book.likes--; }
-  else{ book.likedBy.push(req.user.schoolEmail); book.likes++; }
+  if (!book) return res.status(404).json({ message: "Libro non trovato" });
+
+  const userEmail = req.user.schoolEmail;
+  let likedByMe = false;
+
+  if (book.likedBy.includes(userEmail)) {
+    book.likedBy = book.likedBy.filter(email => email !== userEmail);
+    book.likes = Math.max(0, book.likes - 1);
+  } else {
+    book.likedBy.push(userEmail);
+    book.likes += 1;
+    likedByMe = true;
+  }
+
   await book.save();
   clearBookCache();
-  res.json(book);
+
+  res.json({
+    _id: book._id,
+    title: book.title,
+    likes: book.likes,
+    likedByMe,
+    images: book.images,
+    createdBy: book.createdBy,
+    createdAt: book.createdAt
+  });
 });
+
 
 app.get("/profile/:email", verifyUser, cacheRequest(10000), async (req, res) => {
   const email = req.params.email;
