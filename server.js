@@ -61,7 +61,7 @@ const VerificationCode = mongoose.model("VerificationCode", codeSchema);
 const infoSchema = new mongoose.Schema({ title: { type: String, required: true }, message: { type: String, required: true }, type: { type: String, enum: ["info","alert"], default: "info" }, createdAt: { type: Date, default: Date.now }, createdBy: String });
 const Info = mongoose.model("Info", infoSchema);
 
-const bookSchema = new mongoose.Schema({ title: { type: String, required: true }, condition: { type: String }, price: { type: Number, required: true }, subject: { type: String }, grade: { type: String }, images: [String], likes: { type: Number, default: 0 }, likedBy: [String], createdAt: { type: Date, default: Date.now }, createdBy: String });
+const bookSchema = new mongoose.Schema({ title: { type: String, required: true }, condition: { type: String }, price: { type: Number, required: true }, subject: { type: String }, grade: { type: String }, images: [String], likes: { type: Number, default: 0 }, likedBy: [String], createdAt: { type: Date, default: Date.now }, createdBy: String, description: { type: String, maxlength: 1000 }, isbn: { type: String }});
 const Book = mongoose.model("Book", bookSchema);
 
 const reviewSchema = new mongoose.Schema({
@@ -269,6 +269,8 @@ app.get("/get-books", verifyUser, cacheRequest(10000), async (req, res) => {
       likedByMe: book.likedBy.includes(req.user.schoolEmail),
       createdBy: book.createdBy,
       createdAt: book.createdAt,
+      description: book.description || "",
+      isbn: book.isbn || "",  
     }));
 
     res.json({ books: booksWithLikes, total, page: currentPage, totalPages: Math.ceil(total / booksLimit) });
@@ -278,9 +280,26 @@ app.get("/get-books", verifyUser, cacheRequest(10000), async (req, res) => {
 });
 
 app.post("/add-books", verifyUser, async (req, res) => {
-  const { title, condition, price, subject, grade, images } = req.body;
-  if (!title || !condition || !price || !subject || !grade || !images) return res.status(400).json({ message: "Tutti i campi sono obbligatori" });
-  const newBook = await Book.create({ title, condition, price, subject, grade, images, likes:0, likedBy:[], createdBy:req.user.schoolEmail, createdAt:new Date() });
+  const { title, condition, price, subject, grade, images, description, isbn } = req.body;
+
+  if (!title || !condition || !price || !subject || !grade || !images)
+    return res.status(400).json({ message: "Tutti i campi obbligatori devono essere compilati" });
+
+  const newBook = await Book.create({
+    title,
+    condition,
+    price,
+    subject,
+    grade,
+    images,
+    description: description || "",
+    isbn: isbn || "",
+    likes: 0,
+    likedBy: [],
+    createdBy: req.user.schoolEmail,
+    createdAt: new Date()
+  });
+
   clearBookCache();
   res.status(201).json(newBook);
 });
