@@ -51,7 +51,9 @@ const userSchema = new mongoose.Schema({
   isAdmin: { type: Boolean, default: false },
   averageRating: { type: Number, default: 0 },
   ratingsCount: { type: Number, default: 0 },
-  isReliable: { type: Boolean, default: false }
+  isReliable: { type: Boolean, default: false },
+  lastSeenAt: { type: Date, default: null },
+  lastSeenUpdateAt: { type: Date, default: null }
 });
 const User = mongoose.model("User", userSchema);
 
@@ -106,6 +108,19 @@ async function verifyUser(req, res, next) {
     const payload = jwt.verify(token, SECRET_KEY);
     const user = await User.findOne({ schoolEmail: payload.id });
     if (!user) return res.status(401).json({ message: "Utente non trovato" });
+
+    const now = Date.now();
+    const UPDATE_INTERVAL = 5 * 60 * 1000;
+
+    if (
+      !user.lastSeenUpdateAt ||
+      now - user.lastSeenUpdateAt.getTime() > UPDATE_INTERVAL
+    ) {
+      user.lastSeenAt = new Date(now);
+      user.lastSeenUpdateAt = new Date(now);
+      user.save().catch(() => {});
+    }
+
     req.user = user;
     next();
   } catch {
@@ -339,9 +354,34 @@ app.post("/books/like", verifyUser, async (req, res) => {
 
 app.get("/profile/:email", verifyUser, cacheRequest(10000), async (req, res) => {
   const email = req.params.email;
-  const user = await User.findOne({ schoolEmail: email }, { firstName: 1, lastName: 1, profileImage: 1, instagram: 1, isReliable: 1, averageRating: 1, ratingsCount: 1 }).lean();
+
+  const user = await User.findOne(
+    { schoolEmail: email },
+    {
+      firstName: 1,
+      lastName: 1,
+      profileImage: 1,
+      instagram: 1,
+      isReliable: 1,
+      averageRating: 1,
+      ratingsCount: 1,
+      lastSeenAt: 1
+    }
+  ).lean();
+
   if (!user) return res.status(404).json({ message: "Utente non trovato" });
-  res.status(200).json({ ...user, isReliable: user.isReliable ?? false });
+
+  const ONLINE_THRESHOLD = 2 * 60 * 1000;
+
+  const isOnline =
+    user.lastSeenAt &&
+    Date.now() - new Date(user.lastSeenAt).getTime() < ONLINE_THRESHOLD;
+
+  res.status(200).json({
+    ...user,
+    isOnline,
+    isReliable: user.isReliable ?? false
+  });
 });
 
 app.get("/reviews/:seller", cacheRequest(15000), async (req, res) => {
