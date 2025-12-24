@@ -525,8 +525,22 @@ app.post("/chats/start", verifyUser, async (req, res) => {
     bookId
   });
 
+  const sellerUser = await User.findOne({ schoolEmail: sellerEmail });
+  if (sellerUser) {
+    try {
+      await sendMailWithTimeout({
+        from: process.env.EMAIL_USER,
+        to: sellerEmail,
+        subject: "Nuova chat avviata sul tuo libro",
+        text: `Ciao ${sellerUser.firstName},\n\n${req.user.firstName} ${req.user.lastName} ha avviato una chat per acquistare il tuo libro.\nAccedi all'app per rispondere.\n\nGrazie!`
+      });
+    } catch (e) {
+      console.error("Errore invio email al venditore:", e.message);
+    }
+  }
+
   res.status(201).json({
-    message: "Chat creata",
+    message: "Chat creata correttamente",
     chatId: chat._id
   });
 });
