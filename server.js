@@ -505,18 +505,22 @@ app.get("/chats", verifyUser, async (req, res) => {
       { buyer: req.user.schoolEmail }
     ]
   })
-    .sort({ updatedAt: -1 })
-    .lean();
+  .sort({ updatedAt: -1 })
+  .lean();
 
-  res.json(chats);
+  const mappedChats = chats.map(chat => ({
+    ...chat,
+    isMe: chat.seller === req.user.schoolEmail || chat.buyer === req.user.schoolEmail
+  }));
+
+  res.json(mappedChats);
 });
 
 app.get("/chats/:chatId/messages", verifyUser, async (req, res) => {
   const messages = await Message.find({ chatId: req.params.chatId })
-                                .sort({ createdAt: 1 })
-                                .lean();
+  .sort({ createdAt: 1 })
+  .lean();
 
-  // Mappatura con flag isMe
   const mapped = messages.map(msg => ({
     _id: msg._id,
     sender: msg.sender,
