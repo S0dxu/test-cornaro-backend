@@ -512,11 +512,20 @@ app.get("/chats", verifyUser, async (req, res) => {
 });
 
 app.get("/chats/:chatId/messages", verifyUser, async (req, res) => {
-  const messages = await Message.find({
-    chatId: req.params.chatId
-  }).sort({ createdAt: 1 });
+  const messages = await Message.find({ chatId: req.params.chatId })
+                                .sort({ createdAt: 1 })
+                                .lean();
 
-  res.json(messages);
+  // Mappatura con flag isMe
+  const mapped = messages.map(msg => ({
+    _id: msg._id,
+    sender: msg.sender,
+    text: msg.text,
+    createdAt: msg.createdAt,
+    isMe: msg.sender === req.user.schoolEmail
+  }));
+
+  res.json(mapped);
 });
 
 app.post("/chats/:chatId/messages", verifyUser, async (req, res) => {
