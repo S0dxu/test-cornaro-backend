@@ -533,9 +533,12 @@ app.get("/chats", verifyUser, async (req, res) => {
 });
 
 app.get("/chats/:chatId/messages", verifyUser, async (req, res) => {
+  const { limit = 20, skip = 0 } = req.query;
   const messages = await Message.find({ chatId: req.params.chatId })
-  .sort({ createdAt: 1 })
-  .lean();
+    .sort({ createdAt: -1 })
+    .skip(parseInt(skip))
+    .limit(parseInt(limit))
+    .lean();
 
   const mapped = messages.map(msg => ({
     _id: msg._id,
@@ -545,8 +548,9 @@ app.get("/chats/:chatId/messages", verifyUser, async (req, res) => {
     isMe: msg.sender === req.user.schoolEmail
   }));
 
-  res.json(mapped);
+  res.json(mapped.reverse());
 });
+
 
 app.post("/chats/:chatId/messages", verifyUser, async (req, res) => {
   const { text } = req.body;
