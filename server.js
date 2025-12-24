@@ -77,6 +77,41 @@ const reviewSchema = new mongoose.Schema({
 reviewSchema.index({ reviewer: 1, seller: 1 });
 const Review = mongoose.model("Review", reviewSchema);
 
+const chatSchema = new mongoose.Schema({
+  participants: {
+    type: [String],
+    required: true,
+    index: true
+  },
+  bookId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: "Book",
+    default: null
+  },
+  lastMessage: {
+    text: String,
+    sender: String,
+    createdAt: Date
+  },
+  createdAt: { type: Date, default: Date.now },
+  updatedAt: { type: Date, default: Date.now }
+});
+chatSchema.index({ participants: 1, bookId: 1 }, { unique: true });
+const Chat = mongoose.model("Chat", chatSchema);
+
+const messageSchema = new mongoose.Schema({
+  chatId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: "Chat",
+    required: true,
+    index: true
+  },
+  sender: { type: String, required: true },
+  text: { type: String, required: true },
+  createdAt: { type: Date, default: Date.now }
+});
+const Message = mongoose.model("Message", messageSchema);
+
 function cacheRequest(ttl = 5000) {
   return (req, res, next) => {
     const key = req.originalUrl + JSON.stringify(req.query || {});
@@ -438,6 +473,70 @@ app.post("/reviews/add", verifyUser, reviewLimiter, async (req, res) => {
   } catch (e) {
     res.status(500).json({ message: "Errore server" });
   }
+});
+
+app.post("/chats/start", verifyUser, async (req, res) => {
+  const { sellerEmail, bookId } = req.body;
+
+  if (!sellerEmail || !bookId)
+    return res.status(400).json({ message: "Dati mancanti" });
+
+  if (sellerEmail === req.user.schoolEmail)
+    return res.status(400).json({ message: "Non puoi scrivere a te stesso" });
+
+  let chat = await Chat.findOne({
+    participants: { $all: [req.user.schoolEmail, sellerEmail] },
+    bookId
+  });
+
+  if (!chat) {
+    chat = await Chat.create({
+      participants: [req.user.schoolEmail, sellerEmail],
+      bookId
+    });
+  }
+
+  res.json(chat);
+});
+
+app.get("/chats", verifyUser, async (req, res) => {
+  const chats = await Chat.find({
+    participants: req.user.schoolEmail
+  })
+    .sort({ updatedAt: -1 })
+    .lean();
+
+  res.json(chats);
+});
+
+app.get("/chats/:chatId/messages", verifyUser, async (req, res) => {
+  const messages = await Message.find({
+    chatId: req.params.chatId
+  }).sort({ createdAt: 1 });
+
+  res.json(messages);
+});
+
+app.post("/chats/:chatId/messages", verifyUser, async (req, res) => {
+  const { text } = req.body;
+  if (!text) return res.status(400).json({ message: "Testo mancante" });
+
+  const msg = await Message.create({
+    chatId: req.params.chatId,
+    sender: req.user.schoolEmail,
+    text
+  });
+
+  await Chat.findByIdAndUpdate(req.params.chatId, {
+    lastMessage: {
+      text,
+      sender: req.user.schoolEmail,
+      createdAt: msg.createdAt
+    },
+    updatedAt: new Date()
+  });
+
+  res.status(201).json(msg);
 });
 
 setInterval(()=>{
