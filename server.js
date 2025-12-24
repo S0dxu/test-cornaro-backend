@@ -125,7 +125,7 @@ const chatSchema = new mongoose.Schema({
   createdAt: { type: Date, default: Date.now },
   updatedAt: { type: Date, default: Date.now }
 });
-chatSchema.index({ seller: 1, buyer: 1, bookId: 1 });
+chatSchema.index({ seller: 1, buyer: 1, bookId: 1 }, { unique: true });
 const Chat = mongoose.model("Chat", chatSchema);
 
 const messageSchema = new mongoose.Schema({
@@ -505,20 +505,30 @@ app.post("/chats/start", verifyUser, async (req, res) => {
     return res.status(400).json({ message: "Non puoi scrivere a te stesso" });
 
   let chat = await Chat.findOne({
+    bookId,
+    $or: [
+      { seller: sellerEmail, buyer: req.user.schoolEmail },
+      { seller: req.user.schoolEmail, buyer: sellerEmail }
+    ]
+  });
+
+  if (chat) {
+    return res.status(200).json({
+      message: "Il venditore ha già un compratore per questo libro, non puoi avviare la chat.",
+      chatId: chat._id
+    });
+  }
+
+  chat = await Chat.create({
     seller: sellerEmail,
     buyer: req.user.schoolEmail,
     bookId
   });
 
-  if (!chat) {
-    chat = await Chat.create({
-      seller: sellerEmail,
-      buyer: req.user.schoolEmail,
-      bookId
-    });
-  }
-
-  res.json(chat);
+  res.status(201).json({
+    message: "Chat creata",
+    chatId: chat._id
+  });
 });
 
 app.get("/chats", verifyUser, async (req, res) => {
