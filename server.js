@@ -506,11 +506,18 @@ app.get("/chats", verifyUser, async (req, res) => {
     ]
   })
     .sort({ updatedAt: -1 })
+    .populate('bookId', 'title images price')
     .lean();
 
   const mappedChats = chats.map(chat => {
     const me = req.user.schoolEmail;
     const other = chat.seller === me ? chat.buyer : chat.seller;
+
+    const bookInfo = chat.bookId ? {
+      title: chat.bookId.title,
+      image: chat.bookId.images[0] || null,
+      price: chat.bookId.price
+    } : null;
 
     return {
       _id: chat._id,
@@ -518,6 +525,7 @@ app.get("/chats", verifyUser, async (req, res) => {
       other,
       lastMessage: chat.lastMessage || null,
       updatedAt: chat.updatedAt,
+      book: bookInfo
     };
   });
 
