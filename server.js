@@ -78,11 +78,8 @@ reviewSchema.index({ reviewer: 1, seller: 1 });
 const Review = mongoose.model("Review", reviewSchema);
 
 const chatSchema = new mongoose.Schema({
-  participants: {
-    type: [String],
-    required: true,
-    index: true
-  },
+  seller: { type: String, required: true, index: true },
+  buyer: { type: String, required: true, index: true },
   bookId: {
     type: mongoose.Schema.Types.ObjectId,
     ref: "Book",
@@ -96,7 +93,7 @@ const chatSchema = new mongoose.Schema({
   createdAt: { type: Date, default: Date.now },
   updatedAt: { type: Date, default: Date.now }
 });
-chatSchema.index({ participants: 1, bookId: 1 }, { unique: true });
+chatSchema.index({ seller: 1, buyer: 1, bookId: 1 }, { unique: true });
 const Chat = mongoose.model("Chat", chatSchema);
 
 const messageSchema = new mongoose.Schema({
@@ -485,13 +482,15 @@ app.post("/chats/start", verifyUser, async (req, res) => {
     return res.status(400).json({ message: "Non puoi scrivere a te stesso" });
 
   let chat = await Chat.findOne({
-    participants: { $all: [req.user.schoolEmail, sellerEmail] },
+    seller: sellerEmail,
+    buyer: req.user.schoolEmail,
     bookId
   });
 
   if (!chat) {
     chat = await Chat.create({
-      participants: [req.user.schoolEmail, sellerEmail],
+      seller: sellerEmail,
+      buyer: req.user.schoolEmail,
       bookId
     });
   }
@@ -501,7 +500,10 @@ app.post("/chats/start", verifyUser, async (req, res) => {
 
 app.get("/chats", verifyUser, async (req, res) => {
   const chats = await Chat.find({
-    participants: req.user.schoolEmail
+    $or: [
+      { seller: req.user.schoolEmail },
+      { buyer: req.user.schoolEmail }
+    ]
   })
     .sort({ updatedAt: -1 })
     .lean();
