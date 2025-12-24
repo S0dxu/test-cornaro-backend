@@ -403,7 +403,7 @@ app.get("/profile/:email", verifyUser, cacheRequest(10000), async (req, res) => 
 
   if (!user) return res.status(404).json({ message: "Utente non trovato" });
 
-  const ONLINE_THRESHOLD = 2 * 60 * 1000;
+  const ONLINE_THRESHOLD = 5 * 60 * 1000;
 
   const isOnline =
     user.lastSeenAt &&
