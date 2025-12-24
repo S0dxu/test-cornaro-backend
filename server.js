@@ -88,7 +88,8 @@ const chatSchema = new mongoose.Schema({
   lastMessage: {
     text: String,
     sender: String,
-    createdAt: Date
+    createdAt: Date,
+    seen: { type: Boolean, default: false } 
   },
   createdAt: { type: Date, default: Date.now },
   updatedAt: { type: Date, default: Date.now }
@@ -105,7 +106,7 @@ const messageSchema = new mongoose.Schema({
   },
   sender: { type: String, required: true },
   text: { type: String, required: true },
-  createdAt: { type: Date, default: Date.now }
+  createdAt: { type: Date, default: Date.now },
 });
 const Message = mongoose.model("Message", messageSchema);
 
@@ -158,6 +159,24 @@ async function verifyUser(req, res, next) {
   } catch {
     return res.status(401).json({ message: "Token non valido" });
   }
+}
+
+async function verifyChatAccess(req, res, next) {
+  const chat = await Chat.findById(req.params.chatId);
+  if (!chat) return res.status(404).json({ message: "Chat non trovata" });
+
+  const email = req.user.schoolEmail;
+
+  if (
+    req.user.isAdmin ||
+    chat.seller === email ||
+    chat.buyer === email
+  ) {
+    req.chat = chat;
+    return next();
+  }
+
+  return res.status(403).json({ message: "Accesso non consentito" });
 }
 
 function verifyAdmin(req,res,next){
@@ -482,9 +501,11 @@ app.post("/chats/start", verifyUser, async (req, res) => {
     return res.status(400).json({ message: "Non puoi scrivere a te stesso" });
 
   let chat = await Chat.findOne({
-    seller: sellerEmail,
-    buyer: req.user.schoolEmail,
-    bookId
+    bookId,
+    $or: [
+      { seller: sellerEmail, buyer: req.user.schoolEmail },
+      { seller: req.user.schoolEmail, buyer: sellerEmail }
+    ]
   });
 
   if (!chat) {
@@ -532,8 +553,20 @@ app.get("/chats", verifyUser, async (req, res) => {
   res.json(mappedChats);
 });
 
-app.get("/chats/:chatId/messages", verifyUser, async (req, res) => {
+app.get("/chats/:chatId/messages", verifyUser, verifyChatAccess, async (req, res) => {
   const { limit = 20, skip = 0 } = req.query;
+
+  if (
+    req.chat.lastMessage &&
+    req.chat.lastMessage.sender !== req.user.schoolEmail &&
+    req.chat.lastMessage.seen === false
+  ) {
+    await Chat.updateOne(
+      { _id: req.chat._id },
+      { $set: { "lastMessage.seen": true } }
+    );
+  }
+
   const messages = await Message.find({ chatId: req.params.chatId })
     .sort({ createdAt: -1 })
     .skip(parseInt(skip))
@@ -552,7 +585,7 @@ app.get("/chats/:chatId/messages", verifyUser, async (req, res) => {
 });
 
 
-app.post("/chats/:chatId/messages", verifyUser, async (req, res) => {
+app.post("/chats/:chatId/messages", verifyUser, verifyChatAccess, async (req, res) => {
   const { text } = req.body;
   if (!text) return res.status(400).json({ message: "Testo mancante" });
 
@@ -566,7 +599,8 @@ app.post("/chats/:chatId/messages", verifyUser, async (req, res) => {
     lastMessage: {
       text,
       sender: req.user.schoolEmail,
-      createdAt: msg.createdAt
+      createdAt: msg.createdAt,
+      seen: false
     },
     updatedAt: new Date()
   });
