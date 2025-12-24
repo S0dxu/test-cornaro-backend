@@ -60,7 +60,7 @@ const postLimiterUser = rateLimit({
   max: 2,
   standardHeaders: true,
   legacyHeaders: false,
-  keyGenerator: (req) => req.user.schoolEmail,
+  keyGenerator: (req) => req.user?.schoolEmail || req.ip,
   handler: (req, res) => {
     res.status(429).json({ message: "Limite richieste superato, riprova tra 1 secondo" });
   }
@@ -125,7 +125,7 @@ const chatSchema = new mongoose.Schema({
   createdAt: { type: Date, default: Date.now },
   updatedAt: { type: Date, default: Date.now }
 });
-chatSchema.index({ seller: 1, buyer: 1, bookId: 1 }, { unique: true });
+chatSchema.index({ seller: 1, buyer: 1, bookId: 1 });
 const Chat = mongoose.model("Chat", chatSchema);
 
 const messageSchema = new mongoose.Schema({
@@ -505,11 +505,9 @@ app.post("/chats/start", verifyUser, async (req, res) => {
     return res.status(400).json({ message: "Non puoi scrivere a te stesso" });
 
   let chat = await Chat.findOne({
-    bookId,
-    $or: [
-      { seller: sellerEmail, buyer: req.user.schoolEmail },
-      { seller: req.user.schoolEmail, buyer: sellerEmail }
-    ]
+    seller: sellerEmail,
+    buyer: req.user.schoolEmail,
+    bookId
   });
 
   if (!chat) {
