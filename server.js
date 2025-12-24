@@ -505,13 +505,21 @@ app.get("/chats", verifyUser, async (req, res) => {
       { buyer: req.user.schoolEmail }
     ]
   })
-  .sort({ updatedAt: -1 })
-  .lean();
+    .sort({ updatedAt: -1 })
+    .lean();
 
-  const mappedChats = chats.map(chat => ({
-    ...chat,
-    isMe: chat.seller === req.user.schoolEmail || chat.buyer === req.user.schoolEmail
-  }));
+  const mappedChats = chats.map(chat => {
+    const me = req.user.schoolEmail;
+    const other = chat.seller === me ? chat.buyer : chat.seller;
+
+    return {
+      _id: chat._id,
+      me,
+      other,
+      lastMessage: chat.lastMessage || null,
+      updatedAt: chat.updatedAt,
+    };
+  });
 
   res.json(mappedChats);
 });
