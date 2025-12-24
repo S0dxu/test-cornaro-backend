@@ -15,24 +15,55 @@ const SECRET_KEY = process.env.JWT_SECRET;
 app.use(express.json());
 app.use(cors({ origin: "*", methods: ["GET", "POST"], allowedHeaders: ["Content-Type", "Authorization"] }));
 
+async function verifyUser(req, res, next) {
+  const token = req.headers["authorization"]?.split(" ")[1];
+  if (!token) return res.status(401).json({ message: "Token mancante" });
 
-const postLimiter = rateLimit({
+  try {
+    const payload = jwt.verify(token, SECRET_KEY);
+    const user = await User.findOne({ schoolEmail: payload.id });
+    if (!user) return res.status(401).json({ message: "Utente non trovato" });
+
+    const now = Date.now();
+    const UPDATE_INTERVAL = 5 * 60 * 1000;
+
+    if (
+      !user.lastSeenUpdateAt ||
+      now - user.lastSeenUpdateAt.getTime() > UPDATE_INTERVAL
+    ) {
+      User.updateOne(
+        { _id: user._id },
+        { lastSeenAt: new Date(now), lastSeenUpdateAt: new Date(now) }
+      ).catch(() => {});
+    }
+
+    req.user = user;
+    next();
+  } catch {
+    return res.status(401).json({ message: "Token non valido" });
+  }
+}
+
+const postLimiterIP = rateLimit({
   windowMs: 1000,
   max: 2,
   standardHeaders: true,
   legacyHeaders: false,
-  keyGenerator: (req) => {
-    if (req.user?.schoolEmail) return req.user.schoolEmail;
-    return req.ip;
-  },
+  keyGenerator: (req) => req.ip,
   handler: (req, res) => {
     res.status(429).json({ message: "Limite richieste superato, riprova tra 1 secondo" });
   }
 });
 
-app.use((req, res, next) => {
-  if (req.method === "POST") return postLimiter(req, res, next);
-  next();
+const postLimiterUser = rateLimit({
+  windowMs: 1000,
+  max: 2,
+  standardHeaders: true,
+  legacyHeaders: false,
+  keyGenerator: (req) => req.user.schoolEmail,
+  handler: (req, res) => {
+    res.status(429).json({ message: "Limite richieste superato, riprova tra 1 secondo" });
+  }
 });
 
 mongoose.connect(process.env.MONGO_URI);
@@ -133,61 +164,36 @@ const authLimiter = createLimiter(30);
 
 const transporter = nodemailer.createTransport({ service: "gmail", auth: { user: process.env.EMAIL_USER, pass: process.env.EMAIL_PASS } });
 
-async function verifyUser(req, res, next) {
-  const token = req.headers["authorization"]?.split(" ")[1];
-  if (!token) return res.status(401).json({ message: "Token mancante" });
-
+async function verifyChatAccess(req, res, next) {
   try {
-    const payload = jwt.verify(token, SECRET_KEY);
-    const user = await User.findOne({ schoolEmail: payload.id });
-    if (!user) return res.status(401).json({ message: "Utente non trovato" });
+    const chat = await Chat.findById(req.params.chatId);
+    if (!chat) return res.status(404).json({ message: "Chat non trovata" });
 
-    const now = Date.now();
-    const UPDATE_INTERVAL = 5 * 60 * 1000;
-
-    if (
-      !user.lastSeenUpdateAt ||
-      now - user.lastSeenUpdateAt.getTime() > UPDATE_INTERVAL
-    ) {
-      user.lastSeenAt = new Date(now);
-      user.lastSeenUpdateAt = new Date(now);
-      user.save().catch(() => {});
+    const email = req.user.schoolEmail;
+    if (req.user.isAdmin || chat.seller === email || chat.buyer === email) {
+      req.chat = chat;
+      return next();
     }
 
-    req.user = user;
-    next();
+    return res.status(403).json({ message: "Accesso non consentito" });
   } catch {
-    return res.status(401).json({ message: "Token non valido" });
+    return res.status(400).json({ message: "Chat ID non valido" });
   }
 }
 
-async function verifyChatAccess(req, res, next) {
-  const chat = await Chat.findById(req.params.chatId);
-  if (!chat) return res.status(404).json({ message: "Chat non trovata" });
-
-  const email = req.user.schoolEmail;
-
-  if (
-    req.user.isAdmin ||
-    chat.seller === email ||
-    chat.buyer === email
-  ) {
-    req.chat = chat;
-    return next();
-  }
-
-  return res.status(403).json({ message: "Accesso non consentito" });
-}
-
-function verifyAdmin(req,res,next){
-  verifyUser(req,res,()=>{ if(!req.user.isAdmin) return res.status(403).json({ message:"Non sei admin" }); next(); });
+function verifyAdmin(req, res, next) {
+  verifyUser(req, res, () => {
+    if (!req.user.isAdmin)
+      return res.status(403).json({ message: "Non sei admin" });
+    next();
+  });
 }
 
 function generateCode(){ const chars="ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"; let c=""; for(let i=0;i<6;i++) c+=chars[Math.floor(Math.random()*chars.length)]; return c; }
 function isValidSchoolEmail(email){ email=email.normalize("NFKC").replace(/[^\x00-\x7F]/g,"").toLowerCase().trim(); if(/[\r\n]/.test(email)) return false; return /^[^@]+@studenti\.liceocornaro\.edu\.it$/.test(email); }
 const sendMailWithTimeout = (mailOptions, timeout=10000) => Promise.race([transporter.sendMail(mailOptions), new Promise((_, reject)=>setTimeout(()=>reject(new Error("Timeout invio email")), timeout))]);
 
-app.post("/register/request", async (req,res)=>{
+app.post("/register/request", postLimiterIP, async (req,res)=>{
   const { schoolEmail } = req.body;
   if(!schoolEmail) return res.status(400).json({ message: "Email richiesta" });
   if(!isValidSchoolEmail(schoolEmail)) return res.status(400).json({ message: "Email non valida" });
@@ -202,7 +208,7 @@ app.post("/register/request", async (req,res)=>{
   res.json({ message: "Codice inviato" });
 });
 
-app.post("/register/verify", authLimiter, async (req,res)=>{
+app.post("/register/verify", postLimiterIP, authLimiter, async (req,res)=>{
   const { firstName,lastName,instagram,schoolEmail,password,code,profileImage }=req.body;
   if(!firstName||!lastName||!schoolEmail||!password||!code) return res.status(400).json({ message:"Campi obbligatori mancanti" });
   const key=schoolEmail;
@@ -220,7 +226,7 @@ app.post("/register/verify", authLimiter, async (req,res)=>{
   res.status(201).json({ message:"Registrazione completata", token });
 });
 
-app.post("/login", authLimiter, async (req,res)=>{
+app.post("/login", postLimiterIP, authLimiter, async (req,res)=>{
   const { schoolEmail,password }=req.body;
   if(!schoolEmail||!password) return res.status(400).json({ message:"Campi mancanti" });
   const key=schoolEmail;
@@ -234,8 +240,6 @@ app.post("/login", authLimiter, async (req,res)=>{
   const token = jwt.sign({ id: schoolEmail }, SECRET_KEY);
   res.json({ message:"Login riuscito", token, firstName:user.firstName,lastName:user.lastName,instagram:user.instagram||"",schoolEmail:user.schoolEmail,profileImage:user.profileImage||"" });
 });
-
-app.post("/logout", (req,res)=>res.json({ message:"Logout effettuato" }));
 
 app.post("/admin/clean-codes", verifyAdmin, async (req,res)=>{ const result=await VerificationCode.deleteMany({ expiresAt:{ $lt:new Date() } }); res.json({ eliminati:result.deletedCount }); });
 
@@ -345,7 +349,7 @@ app.get("/get-books", verifyUser, cacheRequest(10000), async (req, res) => {
   }
 });
 
-app.post("/add-books", verifyUser, async (req, res) => {
+app.post("/add-books", verifyUser, postLimiterUser, async (req, res) => {
   const { title, condition, price, subject, grade, images, description, isbn } = req.body;
 
   if (!title || !condition || !price || !subject || !grade || !images)
@@ -370,7 +374,7 @@ app.post("/add-books", verifyUser, async (req, res) => {
   res.status(201).json(newBook);
 });
 
-app.post("/books/like", verifyUser, async (req, res) => {
+app.post("/books/like", verifyUser, postLimiterUser, async (req, res) => {
   const { bookId } = req.body;
   if (!bookId) return res.status(400).json({ message: "ID libro mancante" });
 
@@ -585,7 +589,7 @@ app.get("/chats/:chatId/messages", verifyUser, verifyChatAccess, async (req, res
 });
 
 
-app.post("/chats/:chatId/messages", verifyUser, verifyChatAccess, async (req, res) => {
+app.post("/chats/:chatId/messages", verifyUser, postLimiterUser, verifyChatAccess, async (req, res) => {
   const { text } = req.body;
   if (!text) return res.status(400).json({ message: "Testo mancante" });
 
