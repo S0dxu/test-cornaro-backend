@@ -505,16 +505,14 @@ app.post("/chats/start", verifyUser, async (req, res) => {
     return res.status(400).json({ message: "Non puoi scrivere a te stesso" });
 
   let chat = await Chat.findOne({
-    bookId,
-    $or: [
-      { seller: sellerEmail, buyer: req.user.schoolEmail },
-      { seller: req.user.schoolEmail, buyer: sellerEmail }
-    ]
+    seller: sellerEmail,
+    buyer: req.user.schoolEmail,
+    bookId
   });
 
   if (chat) {
     return res.status(200).json({
-      message: "Il venditore ha già un compratore per questo libro, non puoi avviare la chat.",
+      message: "Chat già esistente",
       chatId: chat._id
     });
   }
