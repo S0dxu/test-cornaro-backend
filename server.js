@@ -114,7 +114,7 @@ const chatSchema = new mongoose.Schema({
   bookId: {
     type: mongoose.Schema.Types.ObjectId,
     ref: "Book",
-    default: null
+    required: true
   },
   lastMessage: {
     text: String,
@@ -125,7 +125,10 @@ const chatSchema = new mongoose.Schema({
   createdAt: { type: Date, default: Date.now },
   updatedAt: { type: Date, default: Date.now }
 });
-chatSchema.index({ seller: 1, buyer: 1, bookId: 1 }, { unique: true });
+chatSchema.index(
+  { seller: 1, buyer: 1, bookId: 1 },
+  { unique: true, partialFilterExpression: { bookId: { $type: "objectId" } } }
+);
 const Chat = mongoose.model("Chat", chatSchema);
 
 const messageSchema = new mongoose.Schema({
@@ -503,6 +506,8 @@ app.post("/chats/start", verifyUser, async (req, res) => {
 
   if (sellerEmail === req.user.schoolEmail)
     return res.status(400).json({ message: "Non puoi scrivere a te stesso" });
+
+  if (!bookId) return res.status(400).json({ message: "bookId obbligatorio" });
 
   let chat = await Chat.findOne({
     seller: sellerEmail,
