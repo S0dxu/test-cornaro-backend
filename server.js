@@ -601,43 +601,27 @@ app.get("/chats/:chatId/messages", verifyUser, verifyChatAccess, async (req, res
 
 
 app.post("/chats/:chatId/messages", verifyUser, postLimiterUser, verifyChatAccess, async (req, res) => {
-  const { text, images } = req.body;
-  if (!text && (!images || images.length === 0)) 
-    return res.status(400).json({ message: "Testo o immagini richieste" });
+  const { text } = req.body;
+  if (!text) return res.status(400).json({ message: "Testo mancante" });
 
-  const msgData = {
+  const msg = await Message.create({
     chatId: req.params.chatId,
     sender: req.user.schoolEmail,
-    text: text || ""
-  };
-
-  if (images && images.length > 0) msgData.images = images;
-
-  const msg = await Message.create(msgData);
+    text
+  });
 
   await Chat.findByIdAndUpdate(req.params.chatId, {
     lastMessage: {
-      text: text || "",
+      text,
       sender: req.user.schoolEmail,
       createdAt: msg.createdAt,
-      seen: false,
-      ...(images && images.length > 0 ? { images } : {})
+      seen: false
     },
     updatedAt: new Date()
   });
 
-  const response = {
-    _id: msg._id,
-    sender: msg.sender,
-    text: msg.text,
-    createdAt: msg.createdAt,
-    isMe: true,
-  };
-  if (msg.images && msg.images.length > 0) response.images = msg.images;
-
-  res.status(201).json(response);
+  res.status(201).json(msg);
 });
-
 
 setInterval(()=>{
   const now=Date.now();
