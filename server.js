@@ -205,7 +205,29 @@ app.post("/register/request", postLimiterIP, async (req,res)=>{
   if(emailCooldown.has(schoolEmail) && now-emailCooldown.get(schoolEmail)<60000) return res.status(429).json({ message: "Attendi 60 secondi" });
   const code = generateCode();
   const expiresAt = new Date(now+10*60000);
-  try{ await sendMailWithTimeout({ from: process.env.EMAIL_USER, to: schoolEmail, subject: "Codice di verifica App Cornaro", text: `Il tuo codice: ${code}` }); } catch(e){ return res.status(400).json({ message:"Email inesistente o problema nell'invio" }); }
+  try{ 
+    await sendEmailViaBridge({
+      to: schoolEmail,
+      subject: "Codice di verifica App Cornaro",
+      html: `
+        <div style="font-family: Arial, sans-serif; background-color: #f6f6f6; padding: 30px;">
+          <div style="max-width: 600px; margin: auto; background-color: #ffffff; padding: 20px; border-radius: 8px; box-shadow: 0 2px 6px rgba(0,0,0,0.1);">
+            <p>Per completare la registrazione, inserisci il codice di verifica qui sotto:</p>
+            
+            <div style="text-align: center; margin: 20px 0; padding: 15px; background-color: #f0f0f0; border-radius: 6px; font-size: 24px; font-weight: bold; letter-spacing: 2px;">
+              ${code}
+            </div>
+            
+            <p>Non condividere questo codice con nessuno. Se non hai richiesto questo codice, puoi ignorare questa email.</p>
+            
+            <hr style="border: none; border-top: 1px solid #ddd; margin: 20px 0;">
+            
+            <p style="font-size: 12px; color: #777;">App Cornaro &copy; 2025. Tutti i diritti riservati.</p>
+          </div>
+        </div>
+      `
+    });
+   } catch(e){ return res.status(400).json({ message:"Email inesistente o problema nell'invio" }); }
   await VerificationCode.findOneAndUpdate({ schoolEmail }, { code, expiresAt }, { upsert:true });
   emailCooldown.set(schoolEmail, now);
   res.json({ message: "Codice inviato" });
@@ -622,6 +644,23 @@ app.post("/chats/:chatId/messages", verifyUser, postLimiterUser, verifyChatAcces
 
   res.status(201).json(msg);
 });
+
+async function sendEmailViaBridge({ to, subject, text, html }) {
+  const fetch = (await import("node-fetch")).default;
+
+  const res = await fetch(process.env.EMAIL_BRIDGE_URL, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "Authorization": `Bearer ${process.env.EMAIL_BRIDGE_SECRET}`
+    },
+    body: JSON.stringify({ to, subject, text, html })
+  });
+
+  if (!res.ok) {
+    throw new Error("Errore invio email via bridge");
+  }
+}
 
 setInterval(()=>{
   const now=Date.now();
