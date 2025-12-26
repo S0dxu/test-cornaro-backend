@@ -550,6 +550,47 @@ app.post("/chats/start", verifyUser, async (req, res) => {
     bookId
   });
 
+  try {
+    const sellerUser = await User.findOne({ schoolEmail: sellerEmail });
+    const buyerUser = req.user;
+    const book = await Book.findById(bookId);
+
+    if (sellerUser && book) {
+      await sendEmailViaBridge({
+        to: sellerUser.schoolEmail,
+        subject: "Hai una nuova chat su App Cornaro",
+        html: `
+          <div style="font-family: Arial, sans-serif; background:#f6f6f6; padding:30px;">
+            <div style="max-width:600px; margin:auto; background:#fff; padding:20px; border-radius:8px;">
+              <h2>Nuovo messaggio ricevuto</h2>
+
+              <p>
+                <strong>${buyerUser.firstName} ${buyerUser.lastName}</strong>
+                ha iniziato una chat per il libro:
+              </p>
+
+              <p style="font-size:18px; font-weight:bold;">
+                ${book.title}
+              </p>
+
+              <p>
+                Apri l’app per rispondere al messaggio.
+              </p>
+
+              <hr style="margin:20px 0;" />
+
+              <p style="font-size:12px; color:#777;">
+                App Cornaro • Notifica automatica
+              </p>
+            </div>
+          </div>
+        `
+      });
+    }
+  } catch (e) {
+    console.error("Errore invio email chat:", e.message);
+  }
+
   res.status(201).json({
     message: "Chat creata",
     chatId: chat._id
