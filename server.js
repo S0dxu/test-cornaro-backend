@@ -607,7 +607,8 @@ app.post("/chats/:chatId/messages", verifyUser, postLimiterUser, verifyChatAcces
   const msg = await Message.create({
     chatId: req.params.chatId,
     sender: req.user.schoolEmail,
-    text
+    text,
+    clientTempId: req.body.clientTempId,
   });
 
   await Chat.findByIdAndUpdate(req.params.chatId, {
