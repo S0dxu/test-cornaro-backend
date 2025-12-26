@@ -560,34 +560,21 @@ app.post("/chats/start", verifyUser, async (req, res) => {
         to: sellerUser.schoolEmail,
         subject: "Hai una nuova chat su App Cornaro",
         html: `
-          <div style="font-family: Arial, sans-serif; background-color: #f6f6f6; padding: 30px;">
-            <div style="max-width: 600px; margin: auto; background-color: #ffffff; padding: 20px; border-radius: 8px; box-shadow: 0 2px 6px rgba(0,0,0,0.1);">
-              
-              <h2 style="margin-top: 0;">Nuovo messaggio ricevuto</h2>
+          <div style="font-family: Arial, sans-serif; background:#f6f6f6; padding:30px;">
+            <div style="max-width:600px; margin:auto; background:#fff; padding:20px; border-radius:8px;">
+              <h2>Nuovo messaggio ricevuto</h2>
 
               <p>
                 <strong>${buyerUser.firstName} ${buyerUser.lastName}</strong>
                 ha iniziato una chat per il libro:
               </p>
 
-              <p style="font-size: 18px; font-weight: bold; margin: 10px 0;">
+              <p style="font-size:18px; font-weight:bold;">
                 ${book.title}
               </p>
 
-              <p>Messaggio:</p>
-
-              <div style="margin: 20px 0; padding: 15px; background-color: #f0f0f0; border-radius: 6px; font-size: 15px; line-height: 1.4;">
-                ${messageText}
-              </div>
-
               <p>
                 Apri l’app per rispondere al messaggio.
-              </p>
-
-              <hr style="border: none; border-top: 1px solid #ddd; margin: 20px 0;">
-
-              <p style="font-size: 12px; color: #777;">
-                App Cornaro &copy; 2025. Tutti i diritti riservati.
               </p>
             </div>
           </div>
