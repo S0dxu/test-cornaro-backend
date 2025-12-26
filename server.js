@@ -219,10 +219,6 @@ app.post("/register/request", postLimiterIP, async (req,res)=>{
             </div>
             
             <p>Non condividere questo codice con nessuno. Se non hai richiesto questo codice, puoi ignorare questa email.</p>
-            
-            <hr style="border: none; border-top: 1px solid #ddd; margin: 20px 0;">
-            
-            <p style="font-size: 12px; color: #777;">App Cornaro &copy; 2025. Tutti i diritti riservati.</p>
           </div>
         </div>
       `
