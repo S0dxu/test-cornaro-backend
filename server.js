@@ -192,6 +192,33 @@ function verifyAdmin(req, res, next) {
   });
 }
 
+async function checkNudity(urlToCheck) {
+  const response = await fetch("https://jigsawstack.com/api/v1/validate/nsfw", {
+    method: "POST",
+    headers: {
+      "accept": "*/*",
+      "accept-language": "en-US,en;q=0.9",
+      "cache-control": "no-cache",
+      "content-type": "application/json",
+      "pragma": "no-cache",
+      "priority": "u=1, i",
+      "sec-ch-ua": '"Google Chrome";v="143", "Chromium";v="143", "Not A(Brand";v="24"',
+      "sec-ch-ua-mobile": "?0",
+      "sec-ch-ua-platform": '"Windows"',
+      "sec-fetch-dest": "empty",
+      "sec-fetch-mode": "cors",
+      "sec-fetch-site": "same-origin",
+      "origin": "https://jigsawstack.com",
+      "referer": "https://jigsawstack.com/nsfw-detection",
+      "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36"
+    },
+    body: JSON.stringify({ url: urlToCheck })
+  });
+
+  const data = await response.json();
+  return data
+}
+
 function generateCode(){ const chars="ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"; let c=""; for(let i=0;i<6;i++) c+=chars[Math.floor(Math.random()*chars.length)]; return c; }
 function isValidSchoolEmail(email){ email=email.normalize("NFKC").replace(/[^\x00-\x7F]/g,"").toLowerCase().trim(); if(/[\r\n]/.test(email)) return false; return /^[^@]+@studenti\.liceocornaro\.edu\.it$/.test(email); }
 const sendMailWithTimeout = (mailOptions, timeout=10000) => Promise.race([transporter.sendMail(mailOptions), new Promise((_, reject)=>setTimeout(()=>reject(new Error("Timeout invio email")), timeout))]);
@@ -229,22 +256,63 @@ app.post("/register/request", postLimiterIP, async (req,res)=>{
   res.json({ message: "Codice inviato" });
 });
 
-app.post("/register/verify", postLimiterIP, authLimiter, async (req,res)=>{
-  const { firstName,lastName,instagram,schoolEmail,password,code,profileImage }=req.body;
-  if(!firstName||!lastName||!schoolEmail||!password||!code) return res.status(400).json({ message:"Campi obbligatori mancanti" });
-  const key=schoolEmail;
-  const fail=failedAttempts.get(key)||{ count:0, lock:0 };
-  if(fail.lock>Date.now()) return res.status(429).json({ message:"Bloccato temporaneamente" });
-  const record=await VerificationCode.findOne({ schoolEmail });
-  if(!record||record.code!==code){ fail.count++; if(fail.count>=5){ fail.lock=Date.now()+600000; failedAttempts.set(key,fail); return res.status(429).json({ message:"Troppi tentativi, riprova tra 10 minuti" }); } failedAttempts.set(key,fail); return res.status(400).json({ message:"Codice non valido" }); }
-  if(record.expiresAt<new Date()) return res.status(400).json({ message:"Codice scaduto" });
-  if(await User.findOne({ schoolEmail })) return res.status(400).json({ message:"Utente già esistente" });
-  const hashed = await bcrypt.hash(password,10);
-  await User.create({ firstName,lastName,instagram:instagram||"",schoolEmail,password:hashed,profileImage:profileImage||"" });
+async function validateProfileImage(url) {
+  if (!url) return null;
+
+  const urls = url.match(imageUrlRegex);
+  if (!urls || urls.length === 0) throw new Error("URL immagine non valido");
+
+  const imageUrl = urls[0];
+  const nudityCheck = await checkNudity(imageUrl);
+  if (nudityCheck.nsfw || nudityCheck.nudity) throw new Error("L'immagine contiene contenuti non consentiti");
+
+  return imageUrl;
+}
+
+app.post("/register/verify", postLimiterIP, authLimiter, async (req, res) => {
+  const { firstName, lastName, instagram, schoolEmail, password, code, profileImage } = req.body;
+  if (!firstName || !lastName || !schoolEmail || !password || !code) return res.status(400).json({ message: "Campi obbligatori mancanti" });
+
+  const key = schoolEmail;
+  const fail = failedAttempts.get(key) || { count: 0, lock: 0 };
+  if (fail.lock > Date.now()) return res.status(429).json({ message: "Bloccato temporaneamente" });
+
+  const record = await VerificationCode.findOne({ schoolEmail });
+  if (!record || record.code !== code) {
+    fail.count++;
+    if (fail.count >= 5) {
+      fail.lock = Date.now() + 600000;
+      failedAttempts.set(key, fail);
+      return res.status(429).json({ message: "Troppi tentativi, riprova tra 10 minuti" });
+    }
+    failedAttempts.set(key, fail);
+    return res.status(400).json({ message: "Codice non valido" });
+  }
+
+  if (record.expiresAt < new Date()) return res.status(400).json({ message: "Codice scaduto" });
+  if (await User.findOne({ schoolEmail })) return res.status(400).json({ message: "Utente già esistente" });
+
+  let validProfileImage = "";
+  if (profileImage) {
+    try {
+      const imageUrlRegex = /(https?:\/\/[^\s]+?\.(?:png|jpg|jpeg|gif|webp))/gi;
+      const urls = profileImage.match(imageUrlRegex);
+      if (!urls || urls.length === 0) throw new Error("URL immagine non valido");
+      const imageUrl = urls[0];
+      const nudityCheck = await checkNudity(imageUrl);
+      if (nudityCheck.nsfw || nudityCheck.nudity) throw new Error("L'immagine contiene contenuti non consentiti");
+      validProfileImage = imageUrl;
+    } catch (e) {
+      return res.status(400).json({ message: e.message });
+    }
+  }
+
+  const hashed = await bcrypt.hash(password, 10);
+  await User.create({ firstName, lastName, instagram: instagram || "", schoolEmail, password: hashed, profileImage: validProfileImage });
   await VerificationCode.deleteOne({ schoolEmail });
   failedAttempts.delete(key);
   const token = jwt.sign({ id: schoolEmail }, SECRET_KEY);
-  res.status(201).json({ message:"Registrazione completata", token });
+  res.status(201).json({ message: "Registrazione completata", token });
 });
 
 app.post("/login", postLimiterIP, authLimiter, async (req,res)=>{
@@ -376,23 +444,34 @@ app.post("/add-books", verifyUser, postLimiterUser, async (req, res) => {
   if (!title || !condition || !price || !subject || !grade || !images)
     return res.status(400).json({ message: "Tutti i campi obbligatori devono essere compilati" });
 
-  const newBook = await Book.create({
-    title,
-    condition,
-    price,
-    subject,
-    grade,
-    images,
-    description: description || "",
-    isbn: isbn || "",
-    likes: 0,
-    likedBy: [],
-    createdBy: req.user.schoolEmail,
-    createdAt: new Date()
-  });
+  try {
+    for (const imgUrl of images) {
+      const nudityCheck = await checkNudity(imgUrl);
+      if (nudityCheck.nsfw || nudityCheck.nudity) {
+        return res.status(400).json({ message: "Una o più immagini contengono nudità o contenuti non consentiti" });
+      }
+    }
 
-  clearBookCache();
-  res.status(201).json(newBook);
+    const newBook = await Book.create({
+      title,
+      condition,
+      price,
+      subject,
+      grade,
+      images,
+      description: description || "",
+      isbn: isbn || "",
+      likes: 0,
+      likedBy: [],
+      createdBy: req.user.schoolEmail,
+      createdAt: new Date()
+    });
+
+    clearBookCache();
+    res.status(201).json(newBook);
+  } catch (e) {
+    res.status(500).json({ message: "Errore server: " + e.message });
+  }
 });
 
 app.post("/books/like", verifyUser, postLimiterUser, async (req, res) => {
@@ -656,6 +735,16 @@ app.get("/chats/:chatId/messages", verifyUser, verifyChatAccess, async (req, res
 app.post("/chats/:chatId/messages", verifyUser, postLimiterUser, verifyChatAccess, async (req, res) => {
   const { text } = req.body;
   if (!text) return res.status(400).json({ message: "Testo mancante" });
+
+  const urlRegex = /(https?:\/\/[^\s]+?\.(?:png|jpg|jpeg|gif|webp))/gi;
+  const urls = text.match(urlRegex) || [];
+
+  for (const url of urls) {
+    const nudityCheck = await checkNudity(url);
+    if (nudityCheck.nsfw || nudityCheck.nudity) {
+      return res.status(400).json({ message: "Il messaggio contiene immagini non consentite" });
+    }
+  }
 
   const msg = await Message.create({
     chatId: req.params.chatId,
