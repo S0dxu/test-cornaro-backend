@@ -193,30 +193,34 @@ function verifyAdmin(req, res, next) {
 }
 
 async function checkNudity(urlToCheck) {
-  const response = await fetch("https://jigsawstack.com/api/v1/validate/nsfw", {
-    method: "POST",
-    headers: {
-      "accept": "*/*",
-      "accept-language": "en-US,en;q=0.9",
-      "cache-control": "no-cache",
-      "content-type": "application/json",
-      "pragma": "no-cache",
-      "priority": "u=1, i",
-      "sec-ch-ua": '"Google Chrome";v="143", "Chromium";v="143", "Not A(Brand";v="24"',
-      "sec-ch-ua-mobile": "?0",
-      "sec-ch-ua-platform": '"Windows"',
-      "sec-fetch-dest": "empty",
-      "sec-fetch-mode": "cors",
-      "sec-fetch-site": "same-origin",
-      "origin": "https://jigsawstack.com",
-      "referer": "https://jigsawstack.com/nsfw-detection",
-      "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36"
-    },
-    body: JSON.stringify({ url: urlToCheck })
-  });
+  try {
+    const response = await fetch("https://jigsawstack.com/api/v1/validate/nsfw", {
+      method: "POST",
+      headers: {
+        "accept": "*/*",
+        "accept-language": "en-US,en;q=0.9",
+        "cache-control": "no-cache",
+        "content-type": "application/json",
+        "pragma": "no-cache",
+        "priority": "u=1, i",
+        "sec-ch-ua": '"Google Chrome";v="143", "Chromium";v="143", "Not A(Brand";v="24"',
+        "sec-ch-ua-mobile": "?0",
+        "sec-ch-ua-platform": '"Windows"',
+        "sec-fetch-dest": "empty",
+        "sec-fetch-mode": "cors",
+        "sec-fetch-site": "same-origin",
+        "origin": "https://jigsawstack.com",
+        "referer": "https://jigsawstack.com/nsfw-detection",
+        "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36"
+      },
+      body: JSON.stringify({ url: urlToCheck })
+    });
 
-  const data = await response.json();
-  return data
+    const data = await response.json();
+    return data;
+  } catch (e) {
+    return { nsfw: false, nudity: false };
+  }
 }
 
 function generateCode(){ const chars="ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"; let c=""; for(let i=0;i<6;i++) c+=chars[Math.floor(Math.random()*chars.length)]; return c; }
@@ -255,19 +259,6 @@ app.post("/register/request", postLimiterIP, async (req,res)=>{
   emailCooldown.set(schoolEmail, now);
   res.json({ message: "Codice inviato" });
 });
-
-async function validateProfileImage(url) {
-  if (!url) return null;
-
-  const urls = url.match(imageUrlRegex);
-  if (!urls || urls.length === 0) throw new Error("URL immagine non valido");
-
-  const imageUrl = urls[0];
-  const nudityCheck = await checkNudity(imageUrl);
-  if (nudityCheck.nsfw || nudityCheck.nudity) throw new Error("L'immagine contiene contenuti non consentiti");
-
-  return imageUrl;
-}
 
 app.post("/register/verify", postLimiterIP, authLimiter, async (req, res) => {
   const { firstName, lastName, instagram, schoolEmail, password, code, profileImage } = req.body;
