@@ -804,7 +804,6 @@ app.post("/fcm/check-new-messages", async (req, res) => {
 
     const senderUser = await User.findOne({ schoolEmail: msg.sender });
 
-    // cerca il primo link Imgur
     const match = msg.text.match(imgurRegex);
     const imageUrl = match ? match[0] : null;
 
@@ -818,7 +817,7 @@ app.post("/fcm/check-new-messages", async (req, res) => {
             ...(imageUrl ? { image: imageUrl } : {}),
           },
           data: {
-            openInbox: "true",
+            chatId: msg.chatId._id.toString(),
           },
         };
 
