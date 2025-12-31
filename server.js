@@ -808,12 +808,19 @@ app.post("/fcm/check-new-messages", async (req, res) => {
           token: t.token,
           notification: {
             title: `${senderUser.firstName} ${senderUser.lastName}`,
-            body: msg.text.length > 80 ? msg.text.slice(0,80)+"…" : msg.text
+            body: msg.text.length > 80 ? msg.text.slice(0,80)+"…" : msg.text,
+            icon: "ic_notification"
+          },
+          android: {
+            notification: {
+              color: "#000000"
+            }
           },
           data: {
             openInbox: "true"
           }
         });
+
         sent++;
       } catch (e) {
         if (e.code === "messaging/registration-token-not-registered") {
