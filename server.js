@@ -800,12 +800,14 @@ app.post("/fcm/check-new-messages", async (req, res) => {
     const receiver = chat.seller === msg.sender ? chat.buyer : chat.seller;
     const tokens = await FcmToken.find({ schoolEmail: receiver });
 
+    const senderUser = await User.findOne({ schoolEmail: msg.sender });
+
     for (const t of tokens) {
       try {
         await admin.messaging().send({
           token: t.token,
           notification: {
-            title: "Nuovo messaggio",
+            title: `${senderUser.firstName} ${senderUser.lastName}`,
             body: msg.text.length > 80 ? msg.text.slice(0,80)+"…" : msg.text
           },
           data: {
