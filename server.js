@@ -7,6 +7,7 @@ const nodemailer = require("nodemailer");
 const rateLimit = require("express-rate-limit");
 const multer = require("multer");
 require("dotenv").config();
+const admin = require("firebase-admin");
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -67,6 +68,14 @@ const postLimiterUser = rateLimit({
 });
 
 mongoose.connect(process.env.MONGO_URI);
+
+admin.initializeApp({
+  credential: admin.credential.cert({
+    projectId: process.env.FIREBASE_PROJECT_ID,
+    clientEmail: process.env.FIREBASE_CLIENT_EMAIL,
+    privateKey: process.env.FIREBASE_PRIVATE_KEY.replace(/\\n/g, "\n"),
+  }),
+});
 
 const emailCooldown = new Map();
 const failedAttempts = new Map();
@@ -132,17 +141,21 @@ chatSchema.index(
 const Chat = mongoose.model("Chat", chatSchema);
 
 const messageSchema = new mongoose.Schema({
-  chatId: {
-    type: mongoose.Schema.Types.ObjectId,
-    ref: "Chat",
-    required: true,
-    index: true
-  },
+  chatId: { type: mongoose.Schema.Types.ObjectId, ref: "Chat", required: true },
   sender: { type: String, required: true },
   text: { type: String, required: true },
   createdAt: { type: Date, default: Date.now },
+  notified: { type: Boolean, default: false }
 });
 const Message = mongoose.model("Message", messageSchema);
+
+const fcmTokenSchema = new mongoose.Schema({
+  schoolEmail: { type: String, required: true, index: true },
+  token: { type: String, required: true, unique: true },
+  platform: { type: String, enum: ["android", "ios", "web"], default: "android" },
+  updatedAt: { type: Date, default: Date.now }
+});
+fcmTokenSchema.index({ schoolEmail: 1 });
 
 function cacheRequest(ttl = 5000) {
   return (req, res, next) => {
@@ -755,6 +768,74 @@ app.post("/chats/:chatId/messages", verifyUser, postLimiterUser, verifyChatAcces
 
   res.status(201).json(msg);
 });
+
+app.post("/fcm/register", verifyUser, postLimiterUser, async (req, res) => {
+  const { token, platform } = req.body;
+
+  if (!token) {
+    return res.status(400).json({ message: "FCM token mancante" });
+  }
+
+  await FcmToken.findOneAndUpdate(
+    { token },
+    {
+      schoolEmail: req.user.schoolEmail,
+      platform: platform || "android",
+      updatedAt: new Date()
+    },
+    { upsert: true }
+  );
+
+  res.json({ message: "FCM token registrato" });
+});
+
+app.post("/fcm/check-new-messages", async (req, res) => {
+  const messages = await Message.find({ notified: false })
+    .populate("chatId")
+    .limit(50);
+
+  let sent = 0;
+
+  for (const msg of messages) {
+    if (!msg.chatId) continue;
+
+    const chat = msg.chatId;
+    const receiver =
+      chat.seller === msg.sender ? chat.buyer : chat.seller;
+
+    const tokens = await FcmToken.find({ schoolEmail: receiver });
+    if (!tokens.length) continue;
+
+    for (const t of tokens) {
+      try {
+        await admin.messaging().send({
+          token: t.token,
+          notification: {
+            title: "Nuovo messaggio",
+            body: msg.text.length > 80
+              ? msg.text.substring(0, 80) + "..."
+              : msg.text,
+          },
+          data: {
+            chatId: chat._id.toString(),
+            sender: msg.sender,
+          },
+        });
+        sent++;
+      } catch (e) {
+        if (e.code === "messaging/registration-token-not-registered") {
+          await FcmToken.deleteOne({ token: t.token });
+        }
+      }
+    }
+
+    msg.notified = true;
+    await msg.save();
+  }
+
+  res.json({ checked: messages.length, notificationsSent: sent });
+});
+
 
 async function sendEmailViaBridge({ to, subject, text, html }) {
   const fetch = (await import("node-fetch")).default;
