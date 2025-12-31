@@ -818,6 +818,8 @@ app.post("/fcm/check-new-messages", async (req, res) => {
           },
           data: {
             chatId: msg.chatId._id.toString(),
+            username: `${senderUser.firstName} ${senderUser.lastName}`,
+            avatar: senderUser.profileImage
           },
         };
 
