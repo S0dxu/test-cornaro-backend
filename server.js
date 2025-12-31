@@ -9,6 +9,14 @@ const multer = require("multer");
 require("dotenv").config();
 const admin = require("firebase-admin");
 
+admin.initializeApp({
+  credential: admin.credential.cert({
+    projectId: process.env.FIREBASE_PROJECT_ID,
+    clientEmail: process.env.FIREBASE_CLIENT_EMAIL,
+    privateKey: process.env.FIREBASE_PRIVATE_KEY.replace(/\\n/g, "\n"),
+  }),
+});
+
 const app = express();
 const PORT = process.env.PORT || 3000;
 const SECRET_KEY = process.env.JWT_SECRET;
@@ -69,14 +77,6 @@ const postLimiterUser = rateLimit({
 
 mongoose.connect(process.env.MONGO_URI);
 
-admin.initializeApp({
-  credential: admin.credential.cert({
-    projectId: process.env.FIREBASE_PROJECT_ID,
-    clientEmail: process.env.FIREBASE_CLIENT_EMAIL,
-    privateKey: process.env.FIREBASE_PRIVATE_KEY.replace(/\\n/g, "\n"),
-  }),
-});
-
 const emailCooldown = new Map();
 const failedAttempts = new Map();
 const requestCache = new Map();
@@ -105,6 +105,13 @@ const Info = mongoose.model("Info", infoSchema);
 
 const bookSchema = new mongoose.Schema({ title: { type: String, required: true }, condition: { type: String }, price: { type: Number, required: true }, subject: { type: String }, grade: { type: String }, images: [String], likes: { type: Number, default: 0 }, likedBy: [String], createdAt: { type: Date, default: Date.now }, createdBy: String, description: { type: String, maxlength: 1000 }, isbn: { type: String }});
 const Book = mongoose.model("Book", bookSchema);
+
+const fcmTokenSchema = new mongoose.Schema({
+  schoolEmail: { type: String, required: true, index: true },
+  token: { type: String, required: true, unique: true },
+  updatedAt: { type: Date, default: Date.now }
+});
+const FcmToken = mongoose.model("FcmToken", fcmTokenSchema);
 
 const reviewSchema = new mongoose.Schema({
   reviewer: { type: String, required: true },
@@ -141,21 +148,18 @@ chatSchema.index(
 const Chat = mongoose.model("Chat", chatSchema);
 
 const messageSchema = new mongoose.Schema({
-  chatId: { type: mongoose.Schema.Types.ObjectId, ref: "Chat", required: true },
+  chatId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: "Chat",
+    required: true,
+    index: true
+  },
   sender: { type: String, required: true },
+  notified: { type: Boolean, default: false },
   text: { type: String, required: true },
   createdAt: { type: Date, default: Date.now },
-  notified: { type: Boolean, default: false }
 });
 const Message = mongoose.model("Message", messageSchema);
-
-const fcmTokenSchema = new mongoose.Schema({
-  schoolEmail: { type: String, required: true, index: true },
-  token: { type: String, required: true, unique: true },
-  platform: { type: String, enum: ["android", "ios", "web"], default: "android" },
-  updatedAt: { type: Date, default: Date.now }
-});
-fcmTokenSchema.index({ schoolEmail: 1 });
 
 function cacheRequest(ttl = 5000) {
   return (req, res, next) => {
@@ -769,24 +773,17 @@ app.post("/chats/:chatId/messages", verifyUser, postLimiterUser, verifyChatAcces
   res.status(201).json(msg);
 });
 
-app.post("/fcm/register", verifyUser, postLimiterUser, async (req, res) => {
-  const { token, platform } = req.body;
-
-  if (!token) {
-    return res.status(400).json({ message: "FCM token mancante" });
-  }
+app.post("/fcm/register", verifyUser, async (req, res) => {
+  const { token } = req.body;
+  if (!token) return res.status(400).json({ message: "Token FCM mancante" });
 
   await FcmToken.findOneAndUpdate(
     { token },
-    {
-      schoolEmail: req.user.schoolEmail,
-      platform: platform || "android",
-      updatedAt: new Date()
-    },
+    { schoolEmail: req.user.schoolEmail, updatedAt: new Date() },
     { upsert: true }
   );
 
-  res.json({ message: "FCM token registrato" });
+  res.json({ message: "Token FCM salvato" });
 });
 
 app.post("/fcm/check-new-messages", async (req, res) => {
@@ -800,11 +797,8 @@ app.post("/fcm/check-new-messages", async (req, res) => {
     if (!msg.chatId) continue;
 
     const chat = msg.chatId;
-    const receiver =
-      chat.seller === msg.sender ? chat.buyer : chat.seller;
-
+    const receiver = chat.seller === msg.sender ? chat.buyer : chat.seller;
     const tokens = await FcmToken.find({ schoolEmail: receiver });
-    if (!tokens.length) continue;
 
     for (const t of tokens) {
       try {
@@ -812,14 +806,12 @@ app.post("/fcm/check-new-messages", async (req, res) => {
           token: t.token,
           notification: {
             title: "Nuovo messaggio",
-            body: msg.text.length > 80
-              ? msg.text.substring(0, 80) + "..."
-              : msg.text,
+            body: msg.text.length > 80 ? msg.text.slice(0,80)+"…" : msg.text
           },
           data: {
             chatId: chat._id.toString(),
-            sender: msg.sender,
-          },
+            sender: msg.sender
+          }
         });
         sent++;
       } catch (e) {
@@ -835,7 +827,6 @@ app.post("/fcm/check-new-messages", async (req, res) => {
 
   res.json({ checked: messages.length, notificationsSent: sent });
 });
-
 
 async function sendEmailViaBridge({ to, subject, text, html }) {
   const fetch = (await import("node-fetch")).default;
