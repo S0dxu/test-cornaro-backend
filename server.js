@@ -791,6 +791,8 @@ app.post("/fcm/check-new-messages", async (req, res) => {
     .populate("chatId")
     .limit(50);
 
+  const imgurRegex = /https:\/\/i\.imgur\.com\/\S+\.(?:png|jpg|jpeg|gif)/i;
+
   let sent = 0;
 
   for (const msg of messages) {
@@ -802,18 +804,25 @@ app.post("/fcm/check-new-messages", async (req, res) => {
 
     const senderUser = await User.findOne({ schoolEmail: msg.sender });
 
+    // cerca il primo link Imgur
+    const match = msg.text.match(imgurRegex);
+    const imageUrl = match ? match[0] : null;
+
     for (const t of tokens) {
       try {
-        await admin.messaging().send({
+        const payload = {
           token: t.token,
           notification: {
             title: `${senderUser.firstName} ${senderUser.lastName}`,
-            body: msg.text.length > 80 ? msg.text.slice(0,80)+"…" : msg.text
+            body: msg.text.length > 80 ? msg.text.slice(0, 80) + "…" : msg.text,
+            ...(imageUrl ? { image: imageUrl } : {}),
           },
           data: {
-            openInbox: "true"
-          }
-        });
+            openInbox: "true",
+          },
+        };
+
+        await admin.messaging().send(payload);
         sent++;
       } catch (e) {
         if (e.code === "messaging/registration-token-not-registered") {
