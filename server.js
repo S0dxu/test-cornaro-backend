@@ -809,8 +809,7 @@ app.post("/fcm/check-new-messages", async (req, res) => {
             body: msg.text.length > 80 ? msg.text.slice(0,80)+"…" : msg.text
           },
           data: {
-            chatId: chat._id.toString(),
-            sender: msg.sender
+            openInbox: "true"
           }
         });
         sent++;
