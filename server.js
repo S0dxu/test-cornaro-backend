@@ -100,7 +100,7 @@ const User = mongoose.model("User", userSchema);
 const codeSchema = new mongoose.Schema({ schoolEmail: { type: String, required: true }, code: String, expiresAt: Date });
 const VerificationCode = mongoose.model("VerificationCode", codeSchema);
 
-const infoSchema = new mongoose.Schema({ title: { type: String, required: true }, message: { type: String, required: true }, type: { type: String, enum: ["info","alert"], default: "info" }, createdAt: { type: Date, default: Date.now }, createdBy: String });
+const infoSchema = new mongoose.Schema({ title: { type: String, required: true }, message: { type: String, required: true }, type: { type: String, enum: ["info","alert"], default: "info" }, createdAt: { type: Date, default: Date.now }, createdBy: String, notified: { type: Boolean, default: false }});
 const Info = mongoose.model("Info", infoSchema);
 
 const bookSchema = new mongoose.Schema({ title: { type: String, required: true }, condition: { type: String }, price: { type: Number, required: true }, subject: { type: String }, grade: { type: String }, images: [String], likes: { type: Number, default: 0 }, likedBy: [String], createdAt: { type: Date, default: Date.now }, createdBy: String, description: { type: String, maxlength: 1000 }, isbn: { type: String }});
@@ -786,14 +786,14 @@ app.post("/fcm/register", verifyUser, async (req, res) => {
   res.json({ message: "Token FCM salvato" });
 });
 
-app.post("/fcm/check-new-messages", async (req, res) => {
+app.post("/fcm/check-new-messages", verifyAdmin, postLimiterUser, async (req, res) => {
+  let sent = 0;
+
   const messages = await Message.find({ notified: false })
     .populate("chatId")
     .limit(50);
 
   const imgurRegex = /https:\/\/i\.imgur\.com\/\S+\.(?:png|jpg|jpeg|gif)/i;
-
-  let sent = 0;
 
   for (const msg of messages) {
     if (!msg.chatId) continue;
@@ -803,7 +803,6 @@ app.post("/fcm/check-new-messages", async (req, res) => {
     const tokens = await FcmToken.find({ schoolEmail: receiver });
 
     const senderUser = await User.findOne({ schoolEmail: msg.sender });
-
     const match = msg.text.match(imgurRegex);
     const imageUrl = match ? match[0] : null;
 
@@ -836,7 +835,41 @@ app.post("/fcm/check-new-messages", async (req, res) => {
     await msg.save();
   }
 
-  res.json({ checked: messages.length, notificationsSent: sent });
+  const infos = await Info.find({ notified: { $ne: true } }).sort({ createdAt: -1 }).limit(50);
+
+  for (const info of infos) {
+    const tokens = await FcmToken.find();
+    for (const t of tokens) {
+      try {
+        const payload = {
+          token: t.token,
+          notification: {
+            title: info.title,
+            body: info.message.length > 80 ? info.message.slice(0, 80) + "…" : info.message,
+          },
+          data: {
+            infoId: info._id.toString(),
+            type: info.type || "info"
+          },
+        };
+        await admin.messaging().send(payload);
+        sent++;
+      } catch (e) {
+        if (e.code === "messaging/registration-token-not-registered") {
+          await FcmToken.deleteOne({ token: t.token });
+        }
+      }
+    }
+
+    info.notified = true;
+    await info.save();
+  }
+
+  res.json({
+    checkedMessages: messages.length,
+    checkedInfos: infos.length,
+    notificationsSent: sent
+  });
 });
 
 async function sendEmailViaBridge({ to, subject, text, html }) {
