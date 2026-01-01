@@ -93,7 +93,11 @@ const userSchema = new mongoose.Schema({
   ratingsCount: { type: Number, default: 0 },
   isReliable: { type: Boolean, default: false },
   lastSeenAt: { type: Date, default: null },
-  lastSeenUpdateAt: { type: Date, default: null }
+  lastSeenUpdateAt: { type: Date, default: null },
+  notifications: {
+    push: { type: Boolean, default: true },
+    email: { type: Boolean, default: true }
+  }
 });
 const User = mongoose.model("User", userSchema);
 
@@ -612,8 +616,6 @@ app.post("/chats/start", verifyUser, async (req, res) => {
   if (sellerEmail === req.user.schoolEmail)
     return res.status(400).json({ message: "Non puoi scrivere a te stesso" });
 
-  if (!bookId) return res.status(400).json({ message: "bookId obbligatorio" });
-
   let chat = await Chat.findOne({
     seller: sellerEmail,
     buyer: req.user.schoolEmail,
@@ -638,7 +640,7 @@ app.post("/chats/start", verifyUser, async (req, res) => {
     const buyerUser = req.user;
     const book = await Book.findById(bookId);
 
-    if (sellerUser && book) {
+    if (sellerUser && book && sellerUser.notifications.email) {
       await sendEmailViaBridge({
         to: sellerUser.schoolEmail,
         subject: "Hai una nuova chat su App Cornaro",
@@ -799,9 +801,16 @@ app.post("/fcm/check-new-messages", verifyAdmin, postLimiterUser, async (req, re
     if (!msg.chatId) continue;
 
     const chat = msg.chatId;
-    const receiver = chat.seller === msg.sender ? chat.buyer : chat.seller;
-    const tokens = await FcmToken.find({ schoolEmail: receiver });
+    const receiverEmail = chat.seller === msg.sender ? chat.buyer : chat.seller;
 
+    const receiverUser = await User.findOne({ schoolEmail: receiverEmail });
+    if (!receiverUser || !receiverUser.notifications.push) {
+      msg.notified = true;
+      await msg.save();
+      continue;
+    }
+
+    const tokens = await FcmToken.find({ schoolEmail: receiverEmail });
     const senderUser = await User.findOne({ schoolEmail: msg.sender });
     const match = msg.text.match(imgurRegex);
     const imageUrl = match ? match[0] : null;
@@ -838,8 +847,12 @@ app.post("/fcm/check-new-messages", verifyAdmin, postLimiterUser, async (req, re
   const infos = await Info.find({ notified: { $ne: true } }).sort({ createdAt: -1 }).limit(50);
 
   for (const info of infos) {
-    const tokens = await FcmToken.find();
+    const tokens = await FcmToken.find().populate({ path: "schoolEmail", select: "notifications.push" });
+
     for (const t of tokens) {
+      const user = await User.findOne({ schoolEmail: t.schoolEmail });
+      if (!user || !user.notifications.push) continue;
+
       try {
         const payload = {
           token: t.token,
@@ -870,6 +883,23 @@ app.post("/fcm/check-new-messages", verifyAdmin, postLimiterUser, async (req, re
     checkedInfos: infos.length,
     notificationsSent: sent
   });
+});
+
+app.post("/user/notifications", verifyUser, async (req, res) => {
+  const { push, email } = req.body;
+  if (push === undefined && email === undefined) 
+    return res.status(400).json({ message: "Nessun dato inviato" });
+
+  const update = {};
+  if (push !== undefined) update["notifications.push"] = !!push;
+  if (email !== undefined) update["notifications.email"] = !!email;
+
+  await User.updateOne({ schoolEmail: req.user.schoolEmail }, update);
+  res.json({ message: "Preferenze aggiornate", notifications: update });
+});
+
+app.get("/user/notifications", verifyUser, async (req,res) => {
+  res.json(req.user.notifications);
 });
 
 async function sendEmailViaBridge({ to, subject, text, html }) {
