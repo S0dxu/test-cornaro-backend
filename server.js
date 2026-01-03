@@ -8,6 +8,8 @@ const rateLimit = require("express-rate-limit");
 const multer = require("multer");
 require("dotenv").config();
 const admin = require("firebase-admin");
+const stripe = require("stripe")(process.env.STRIPE_SECRET_KEY);
+const bodyParser = require("body-parser");
 
 admin.initializeApp({
   credential: admin.credential.cert({
@@ -16,6 +18,12 @@ admin.initializeApp({
     privateKey: process.env.FIREBASE_PRIVATE_KEY.replace(/\\n/g, "\n"),
   }),
 });
+
+const CREDIT_PACKAGES = {
+  basic: { credits: 50, price: 249 },
+  pro:   { credits: 150, price: 699 },
+  max:   { credits: 250, price: 1099 },
+};
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -399,7 +407,7 @@ app.post("/register/verify", postLimiterIP, authLimiter, async (req, res) => {
   await User.create({ firstName, lastName, instagram: instagram || "", schoolEmail, password: hashed, profileImage: validProfileImage });
   await VerificationCode.deleteOne({ schoolEmail });
   failedAttempts.delete(key);
-  const token = jwt.sign({ id: schoolEmail }, SECRET_KEY); //! exp rate di 7d da aggiungere
+  const token = jwt.sign({ id: schoolEmail }, SECRET_KEY); //! exp rate di 30d da aggiungere + refresh token
   res.status(201).json({ message: "Registrazione completata", token });
 });
 
@@ -543,43 +551,55 @@ app.post("/add-books", verifyUser, postLimiterUser, async (req, res) => {
       }
     }
 
-    const user = await User.findOneAndUpdate(
-      {
-        _id: req.user._id,
-        credits: { $gte: 10 }
-      },
-      {
-        $inc: { credits: -10 }
-      },
-      { new: true }
-    );
+    const session = await mongoose.startSession();
+    session.startTransaction();
 
-    if (!user) {
-      return res.status(403).json({ message: "Crediti insufficienti" });
+    try {
+      const updatedUser = await User.findOneAndUpdate(
+        { _id: req.user._id, credits: { $gte: 10 } },
+        { $inc: { credits: -10 } },
+        { session, new: true }
+      );
+
+      if (!updatedUser) {
+        throw new Error("Crediti insufficienti");
+      }
+
+
+      const [newBook] = await Book.create([{
+        title,
+        condition,
+        price,
+        subject,
+        grade,
+        images,
+        description: description || "",
+        isbn: isbn || "",
+        createdBy: req.user.schoolEmail
+      }], { session });
+
+      await session.commitTransaction();
+      session.endSession();
+
+      clearBookCache();
+      
+      return res.status(201).json({
+        message: "Libro pubblicato",
+        creditsLeft: updatedUser.credits,
+        book: newBook
+      });
+
+    } catch (error) {
+      await session.abortTransaction();
+      session.endSession();
+      return res.status(error.message === "Crediti insufficienti" ? 403 : 400).json({ 
+        message: error.message 
+      });
     }
 
-    const newBook = await Book.create({
-      title,
-      condition,
-      price,
-      subject,
-      grade,
-      images,
-      description: description || "",
-      isbn: isbn || "",
-      createdBy: req.user.schoolEmail
-    });
-
-    clearBookCache();
-
-    res.status(201).json({
-      message: "Libro pubblicato",
-      creditsLeft: user.credits,
-      book: newBook
-    });
-
   } catch (e) {
-    res.status(500).json({ message: "Errore server" });
+    console.error("Errore server add-books:", e);
+    res.status(500).json({ message: "Errore interno del server" });
   }
 });
 
@@ -1010,6 +1030,91 @@ app.post("/user/notifications", verifyUser, async (req, res) => {
 app.get("/user/notifications", verifyUser, async (req,res) => {
   res.json(req.user.notifications);
 });
+
+app.post("/create-checkout-session", verifyUser, async (req, res) => {
+  const { packageId } = req.body;
+
+  const pkg = CREDIT_PACKAGES[packageId];
+  if (!pkg) return res.status(400).json({ message: "Pacchetto non valido" });
+
+  try {
+    const session = await stripe.checkout.sessions.create({
+      payment_method_types: ["card"],
+      mode: "payment",
+      line_items: [
+        {
+          price_data: {
+            currency: "eur",
+            product_data: {
+              name: `${pkg.credits} Crediti App Cornaro`,
+            },
+            unit_amount: pkg.price,
+          },
+          quantity: 1,
+        },
+      ],
+      success_url: `${process.env.FRONTEND_URL}/credits/success?session_id={CHECKOUT_SESSION_ID}`,
+      cancel_url: `${process.env.FRONTEND_URL}/credits/cancel`,
+      metadata: {
+        userEmail: req.user.schoolEmail,
+        packageId: packageId,
+      },
+    });
+
+    res.json({ url: session.url });
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ message: "Errore creazione sessione" });
+  }
+});
+
+app.post(
+  "/stripe-webhook",
+  bodyParser.raw({ type: "application/json" }),
+  async (req, res) => {
+    const sig = req.headers["stripe-signature"];
+    let event;
+
+    try {
+      event = stripe.webhooks.constructEvent(
+        req.body,
+        sig,
+        process.env.STRIPE_WEBHOOK_SECRET
+      );
+    } catch (err) {
+      console.error("Webhook signature failed:", err.message);
+      return res.status(400).send(`Webhook Error: ${err.message}`);
+    }
+
+    if (event.type === "checkout.session.completed") {
+      const session = event.data.object;
+
+      const userEmail = session.metadata.userEmail;
+      const packageId = session.metadata.packageId;
+
+      const pkg = CREDIT_PACKAGES[packageId];
+      if (!pkg) {
+        console.error("Pacchetto non valido dal webhook:", packageId);
+        return res.status(400).send("Pacchetto non valido");
+      }
+
+      try {
+        const user = await User.findOneAndUpdate(
+          { schoolEmail: userEmail },
+          { $inc: { credits: pkg.credits } },
+          { new: true }
+        );
+        if (!user) throw new Error("Utente non trovato");
+
+        console.log(`Aggiunti ${pkg.credits} crediti a ${userEmail}`);
+      } catch (e) {
+        console.error("Errore assegnazione crediti:", e.message);
+      }
+    }
+
+    res.json({ received: true });
+  }
+);
 
 async function sendEmailViaBridge({ to, subject, text, html }) {
   const fetch = (await import("node-fetch")).default;
