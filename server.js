@@ -9,7 +9,6 @@ const multer = require("multer");
 require("dotenv").config();
 const admin = require("firebase-admin");
 const stripe = require("stripe")(process.env.STRIPE_SECRET_KEY);
-const bodyParser = require("body-parser");
 const NodeCache = require("node-cache");
 
 admin.initializeApp({
@@ -1084,8 +1083,8 @@ app.post("/create-checkout-session", verifyUser, async (req, res) => {
           quantity: 1,
         },
       ],
-      success_url: `${process.env.FRONTEND_URL}/credits/success?session_id={CHECKOUT_SESSION_ID}`,
-      cancel_url: `${process.env.FRONTEND_URL}/credits/cancel`,
+      success_url: `https://cornaro-backend.onrender.com/success?session_id={CHECKOUT_SESSION_ID}`,
+      cancel_url: `https://cornaro-backend.onrender.com/cancel`,
       metadata: {
         userEmail: req.user.schoolEmail,
         packageId: packageId,
