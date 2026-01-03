@@ -1063,7 +1063,6 @@ app.get("/user/notifications", verifyUser, async (req,res) => {
 
 app.post("/create-checkout-session", verifyUser, async (req, res) => {
   const { packageId } = req.body;
-
   const pkg = CREDIT_PACKAGES[packageId];
   if (!pkg) return res.status(400).json({ message: "Pacchetto non valido" });
 
@@ -1075,59 +1074,40 @@ app.post("/create-checkout-session", verifyUser, async (req, res) => {
         {
           price_data: {
             currency: "eur",
-            product_data: {
-              name: `${pkg.credits} Crediti App Cornaro`,
-            },
+            product_data: { name: `${pkg.credits} Crediti App Cornaro` },
             unit_amount: pkg.price,
           },
           quantity: 1,
         },
       ],
-      success_url: `https://cornaro-backend.onrender.com/success?session_id={CHECKOUT_SESSION_ID}`,
-      cancel_url: `https://cornaro-backend.onrender.com/cancel`,
-      metadata: {
-        userEmail: req.user.schoolEmail,
-        packageId: packageId,
-      },
+      success_url: `cornaro://success?session_id={CHECKOUT_SESSION_ID}`,
+      cancel_url: `cornaro://canceled`,
+      metadata: { userEmail: req.user.schoolEmail, packageId },
     });
-
     res.json({ url: session.url });
   } catch (e) {
-    console.error(e);
     res.status(500).json({ message: "Errore creazione sessione" });
   }
 });
 
-app.post("/stripe-webhook", express.raw({ type: "application/json" }),
-  async (req, res) => {
-    const sig = req.headers["stripe-signature"];
-    let event;
-
-    try {
-      event = stripe.webhooks.constructEvent(
-        req.body,
-        sig,
-        process.env.STRIPE_WEBHOOK_SECRET
-      );
-    } catch (err) {
-      return res.status(400).send(`Webhook Error: ${err.message}`);
-    }
-
-    if (event.type === "checkout.session.completed") {
-      const session = event.data.object;
-      const { userEmail, packageId } = session.metadata;
-      const pkg = CREDIT_PACKAGES[packageId];
-
-      if (pkg) {
-        await User.updateOne(
-          { schoolEmail: userEmail },
-          { $inc: { credits: pkg.credits } }
-        );
-      }
-    }
-    res.json({ received: true });
+app.post("/stripe-webhook", express.raw({ type: "application/json" }), async (req, res) => {
+  const sig = req.headers["stripe-signature"];
+  let event;
+  try {
+    event = stripe.webhooks.constructEvent(req.body, sig, process.env.STRIPE_WEBHOOK_SECRET);
+  } catch {
+    return res.status(400).send("Webhook Error");
   }
-);
+
+  if (event.type === "checkout.session.completed") {
+    const session = event.data.object;
+    const { userEmail, packageId } = session.metadata;
+    const pkg = CREDIT_PACKAGES[packageId];
+    if (pkg) await User.updateOne({ schoolEmail: userEmail }, { $inc: { credits: pkg.credits } });
+  }
+
+  res.json({ received: true });
+});
 
 async function sendEmailViaBridge({ to, subject, text, html }) {
   const fetch = (await import("node-fetch")).default;
