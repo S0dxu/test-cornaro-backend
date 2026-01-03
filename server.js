@@ -21,8 +21,16 @@ const app = express();
 const PORT = process.env.PORT || 3000;
 const SECRET_KEY = process.env.JWT_SECRET;
 
-app.use(express.json());
-app.use(cors({ origin: "*", methods: ["GET", "POST"], allowedHeaders: ["Content-Type", "Authorization"] }));
+app.use(
+  express.json()
+);
+app.use(
+  cors({ 
+    origin: "*", //! da togliere e mettere solo il sito
+    methods: ["GET", "POST"], 
+    allowedHeaders: ["Content-Type", "Authorization"] 
+  }
+)); 
 
 async function verifyUser(req, res, next) {
   const token = req.headers["authorization"]?.split(" ")[1];
@@ -91,7 +99,7 @@ const userSchema = new mongoose.Schema({
   isAdmin: { type: Boolean, default: false },
   averageRating: { type: Number, default: 0 },
   ratingsCount: { type: Number, default: 0 },
-  isReliable: { type: Boolean, default: false },
+  credits: { type: Number, default: 50, min: 0 },
   lastSeenAt: { type: Date, default: null },
   lastSeenUpdateAt: { type: Date, default: null },
   notifications: {
@@ -101,13 +109,81 @@ const userSchema = new mongoose.Schema({
 });
 const User = mongoose.model("User", userSchema);
 
-const codeSchema = new mongoose.Schema({ schoolEmail: { type: String, required: true }, code: String, expiresAt: Date });
+const codeSchema = new mongoose.Schema({ 
+  schoolEmail: { 
+    type: String, 
+    required: true 
+  }, 
+  code: String, 
+  expiresAt: Date 
+});
 const VerificationCode = mongoose.model("VerificationCode", codeSchema);
 
-const infoSchema = new mongoose.Schema({ title: { type: String, required: true }, message: { type: String, required: true }, type: { type: String, enum: ["info","alert"], default: "info" }, createdAt: { type: Date, default: Date.now }, createdBy: String, notified: { type: Boolean, default: false }});
+const infoSchema = new mongoose.Schema({ 
+  title: { 
+    type: String, 
+    required: true 
+  }, 
+  message: { 
+    type: String, 
+    required: true 
+  }, 
+  type: { 
+    type: String, 
+    enum: ["info","alert"], 
+    default: "info" 
+  }, 
+  createdAt: { 
+    type: Date, 
+    default: Date.now 
+  }, 
+  createdBy: String, 
+  notified: { 
+    type: Boolean, 
+    default: false 
+  }
+});
 const Info = mongoose.model("Info", infoSchema);
 
-const bookSchema = new mongoose.Schema({ title: { type: String, required: true }, condition: { type: String }, price: { type: Number, required: true }, subject: { type: String }, grade: { type: String }, images: [String], likes: { type: Number, default: 0 }, likedBy: [String], createdAt: { type: Date, default: Date.now }, createdBy: String, description: { type: String, maxlength: 1000 }, isbn: { type: String }});
+const bookSchema = new mongoose.Schema({ 
+  title: {
+    type: String, 
+    required: true 
+  }, 
+  condition: { 
+    type: String 
+  }, 
+  price: { 
+    type: Number,
+    required: true 
+  }, 
+  subject: { 
+    type: String 
+  }, 
+  grade: { 
+    type: String 
+  }, 
+  images: [String], 
+  likes: { 
+    type: Number, 
+    default: 0 
+  }, 
+  likedBy: { 
+    type: [String], 
+    default: [] 
+  },
+  createdAt: { 
+    type: Date, 
+    default: Date.now 
+  }, 
+  createdBy: String, 
+  description: { 
+    type: String, 
+    maxlength: 1000 
+  }, isbn: { 
+    type: String 
+  }
+});
 const Book = mongoose.model("Book", bookSchema);
 
 const fcmTokenSchema = new mongoose.Schema({
@@ -167,7 +243,7 @@ const Message = mongoose.model("Message", messageSchema);
 
 function cacheRequest(ttl = 5000) {
   return (req, res, next) => {
-    const key = req.originalUrl + JSON.stringify(req.query || {});
+    const key = req.user?.schoolEmail + req.originalUrl + JSON.stringify(req.query || {});
     const now = Date.now();
     if (requestCache.has(key)) {
       const { timestamp, data } = requestCache.get(key);
@@ -323,7 +399,7 @@ app.post("/register/verify", postLimiterIP, authLimiter, async (req, res) => {
   await User.create({ firstName, lastName, instagram: instagram || "", schoolEmail, password: hashed, profileImage: validProfileImage });
   await VerificationCode.deleteOne({ schoolEmail });
   failedAttempts.delete(key);
-  const token = jwt.sign({ id: schoolEmail }, SECRET_KEY);
+  const token = jwt.sign({ id: schoolEmail }, SECRET_KEY); //! exp rate di 7d da aggiungere
   res.status(201).json({ message: "Registrazione completata", token });
 });
 
@@ -454,14 +530,32 @@ app.post("/add-books", verifyUser, postLimiterUser, async (req, res) => {
   const { title, condition, price, subject, grade, images, description, isbn } = req.body;
 
   if (!title || !condition || !price || !subject || !grade || !images)
-    return res.status(400).json({ message: "Tutti i campi obbligatori devono essere compilati" });
+    return res.status(400).json({ message: "Campi obbligatori mancanti" });
+
+  if (!Array.isArray(images) || images.length === 0)
+    return res.status(400).json({ message: "Immagini non valide" });
 
   try {
     for (const imgUrl of images) {
       const nudityCheck = await checkNudity(imgUrl);
       if (nudityCheck.nsfw || nudityCheck.nudity) {
-        return res.status(400).json({ message: "Una o più immagini contengono nudità o contenuti non consentiti" });
+        return res.status(400).json({ message: "Immagini non consentite" });
       }
+    }
+
+    const user = await User.findOneAndUpdate(
+      {
+        _id: req.user._id,
+        credits: { $gte: 10 }
+      },
+      {
+        $inc: { credits: -10 }
+      },
+      { new: true }
+    );
+
+    if (!user) {
+      return res.status(403).json({ message: "Crediti insufficienti" });
     }
 
     const newBook = await Book.create({
@@ -473,50 +567,69 @@ app.post("/add-books", verifyUser, postLimiterUser, async (req, res) => {
       images,
       description: description || "",
       isbn: isbn || "",
-      likes: 0,
-      likedBy: [],
-      createdBy: req.user.schoolEmail,
-      createdAt: new Date()
+      createdBy: req.user.schoolEmail
     });
 
     clearBookCache();
-    res.status(201).json(newBook);
+
+    res.status(201).json({
+      message: "Libro pubblicato",
+      creditsLeft: user.credits,
+      book: newBook
+    });
+
   } catch (e) {
-    res.status(500).json({ message: "Errore server: " + e.message });
+    res.status(500).json({ message: "Errore server" });
   }
 });
 
-app.post("/books/like", verifyUser, postLimiterUser, async (req, res) => {
+app.post("/books/like", verifyUser, async (req, res) => {
   const { bookId } = req.body;
-  if (!bookId) return res.status(400).json({ message: "ID libro mancante" });
-
-  const book = await Book.findById(bookId);
-  if (!book) return res.status(404).json({ message: "Libro non trovato" });
-
   const userEmail = req.user.schoolEmail;
-  let likedByMe = false;
 
-  if (book.likedBy.includes(userEmail)) {
-    book.likedBy = book.likedBy.filter(email => email !== userEmail);
-    book.likes = Math.max(0, book.likes - 1);
-  } else {
-    book.likedBy.push(userEmail);
-    book.likes += 1;
-    likedByMe = true;
+  if (!bookId)
+    return res.status(400).json({ message: "bookId mancante" });
+
+  try {
+    const liked = await Book.findOneAndUpdate(
+      {
+        _id: bookId,
+        likedBy: { $ne: userEmail }
+      },
+      {
+        $addToSet: { likedBy: userEmail },
+        $inc: { likes: 1 }
+      },
+      { new: true }
+    );
+
+    if (!liked) {
+      const unliked = await Book.findOneAndUpdate(
+        {
+          _id: bookId,
+          likedBy: userEmail
+        },
+        {
+          $pull: { likedBy: userEmail },
+          $inc: { likes: -1 }
+        },
+        { new: true }
+      );
+
+      return res.json({
+        liked: false,
+        likes: unliked.likes
+      });
+    }
+
+    res.json({
+      liked: true,
+      likes: liked.likes
+    });
+
+  } catch (e) {
+    res.status(500).json({ message: "Errore server" });
   }
-
-  await book.save();
-  clearBookCache();
-
-  res.json({
-    _id: book._id,
-    title: book.title,
-    likes: book.likes,
-    likedByMe,
-    images: book.images,
-    createdBy: book.createdBy,
-    createdAt: book.createdAt
-  });
 });
 
 app.get("/profile/:email", verifyUser, cacheRequest(10000), async (req, res) => {
@@ -797,17 +910,15 @@ app.post("/fcm/check-new-messages", verifyAdmin, postLimiterUser, async (req, re
 
   const imgurRegex = /https:\/\/i\.imgur\.com\/\S+\.(?:png|jpg|jpeg|gif)/i;
 
-  for (const msg of messages) {
-    if (!msg.chatId) continue;
+  await Promise.all(messages.map(async (msg) => {
+    if (!msg.chatId) return;
 
     const chat = msg.chatId;
     const receiverEmail = chat.seller === msg.sender ? chat.buyer : chat.seller;
-
     const receiverUser = await User.findOne({ schoolEmail: receiverEmail });
     if (!receiverUser || !receiverUser.notifications.push) {
       msg.notified = true;
-      await msg.save();
-      continue;
+      return msg.save();
     }
 
     const tokens = await FcmToken.find({ schoolEmail: receiverEmail });
@@ -815,7 +926,7 @@ app.post("/fcm/check-new-messages", verifyAdmin, postLimiterUser, async (req, re
     const match = msg.text.match(imgurRegex);
     const imageUrl = match ? match[0] : null;
 
-    for (const t of tokens) {
+    await Promise.all(tokens.map(async (t) => {
       try {
         const payload = {
           token: t.token,
@@ -830,7 +941,6 @@ app.post("/fcm/check-new-messages", verifyAdmin, postLimiterUser, async (req, re
             avatar: senderUser.profileImage
           },
         };
-
         await admin.messaging().send(payload);
         sent++;
       } catch (e) {
@@ -838,20 +948,19 @@ app.post("/fcm/check-new-messages", verifyAdmin, postLimiterUser, async (req, re
           await FcmToken.deleteOne({ token: t.token });
         }
       }
-    }
+    }));
 
     msg.notified = true;
     await msg.save();
-  }
+  }));
 
   const infos = await Info.find({ notified: { $ne: true } }).sort({ createdAt: -1 }).limit(50);
 
-  for (const info of infos) {
-    const tokens = await FcmToken.find().populate({ path: "schoolEmail", select: "notifications.push" });
-
-    for (const t of tokens) {
+  await Promise.all(infos.map(async (info) => {
+    const tokens = await FcmToken.find();
+    await Promise.all(tokens.map(async (t) => {
       const user = await User.findOne({ schoolEmail: t.schoolEmail });
-      if (!user || !user.notifications.push) continue;
+      if (!user || !user.notifications.push) return;
 
       try {
         const payload = {
@@ -872,11 +981,10 @@ app.post("/fcm/check-new-messages", verifyAdmin, postLimiterUser, async (req, re
           await FcmToken.deleteOne({ token: t.token });
         }
       }
-    }
-
+    }));
     info.notified = true;
     await info.save();
-  }
+  }));
 
   res.json({
     checkedMessages: messages.length,
@@ -884,6 +992,7 @@ app.post("/fcm/check-new-messages", verifyAdmin, postLimiterUser, async (req, re
     notificationsSent: sent
   });
 });
+
 
 app.post("/user/notifications", verifyUser, async (req, res) => {
   const { push, email } = req.body;
