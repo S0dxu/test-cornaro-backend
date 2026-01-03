@@ -10,6 +10,7 @@ require("dotenv").config();
 const admin = require("firebase-admin");
 const stripe = require("stripe")(process.env.STRIPE_SECRET_KEY);
 const bodyParser = require("body-parser");
+const NodeCache = require("node-cache");
 
 admin.initializeApp({
   credential: admin.credential.cert({
@@ -29,9 +30,8 @@ const app = express();
 const PORT = process.env.PORT || 3000;
 const SECRET_KEY = process.env.JWT_SECRET;
 
-app.use(
-  express.json()
-);
+app.use(express.json());
+app.use('/stripe-webhook', express.raw({ type: 'application/json' }));
 app.use(
   cors({ 
     origin: "*", //! da togliere e mettere solo il sito
@@ -95,7 +95,7 @@ mongoose.connect(process.env.MONGO_URI);
 
 const emailCooldown = new Map();
 const failedAttempts = new Map();
-const requestCache = new Map();
+/* const requestCache = new Map(); */
 
 const userSchema = new mongoose.Schema({
   firstName: { type: String, required: true },
@@ -249,23 +249,45 @@ const messageSchema = new mongoose.Schema({
 });
 const Message = mongoose.model("Message", messageSchema);
 
-function cacheRequest(ttl = 5000) {
+const myCache = new NodeCache({ stdTTL: 600, checkperiod: 120 });
+
+function cacheRequest(ttl = 600) {
   return (req, res, next) => {
-    const key = req.user?.schoolEmail + req.originalUrl + JSON.stringify(req.query || {});
-    const now = Date.now();
-    if (requestCache.has(key)) {
-      const { timestamp, data } = requestCache.get(key);
-      if (now - timestamp < ttl) return res.json(data);
+    const key = `__cache__${req.user?.schoolEmail || 'guest'}${req.originalUrl}${JSON.stringify(req.query || {})}`;
+    
+    const cachedData = myCache.get(key);
+    if (cachedData) {
+      return res.json(cachedData);
     }
+
     const originalJson = res.json.bind(res);
-    res.json = (body) => { requestCache.set(key, { timestamp: now, data: body }); originalJson(body); };
+    res.json = (body) => {
+      if (res.statusCode >= 200 && res.statusCode < 300) {
+        myCache.set(key, body, ttl);
+      }
+      originalJson(body);
+    };
     next();
   };
 }
 
-function clearInfoCache() { for (const key of requestCache.keys()) if (key.startsWith("/get-info")) requestCache.delete(key); }
-function clearBookCache() { for (const key of requestCache.keys()) if (key.startsWith("/get-books")) requestCache.delete(key); }
-function clearReviewCache(seller) { for (const key of requestCache.keys()) { if (key.includes(`/reviews/${seller}`)) { requestCache.delete(key); }}}
+function clearInfoCache() { 
+  const keys = myCache.keys();
+  const targets = keys.filter(key => key.includes("/get-info"));
+  if (targets.length > 0) myCache.del(targets);
+}
+
+function clearBookCache() { 
+  const keys = myCache.keys();
+  const targets = keys.filter(key => key.includes("/get-books"));
+  if (targets.length > 0) myCache.del(targets);
+}
+
+function clearReviewCache(seller) { 
+  const keys = myCache.keys();
+  const targets = keys.filter(key => key.includes(`/reviews/${seller}`));
+  if (targets.length > 0) myCache.del(targets);
+}
 
 const createLimiter = (max) => rateLimit({ windowMs: 60000, max, standardHeaders: true, legacyHeaders: false });
 const authLimiter = createLimiter(30);
@@ -732,7 +754,8 @@ app.post("/reviews/add", verifyUser, reviewLimiter, async (req, res) => {
 
     await User.updateOne({ schoolEmail: seller }, { averageRating: avg, ratingsCount: count, isReliable: avg >= 4 && count >= 3 });
     clearReviewCache(seller);
-    requestCache.delete(`/profile/${seller}`);
+    const profileKeys = myCache.keys().filter(k => k.includes(`/profile/${seller}`));
+    if (profileKeys.length > 0) myCache.del(profileKeys);
 
     res.status(201).json({ message: "Recensione inviata" });
   } catch (e) {
@@ -879,16 +902,6 @@ app.post("/chats/:chatId/messages", verifyUser, postLimiterUser, verifyChatAcces
   const { text } = req.body;
   if (!text) return res.status(400).json({ message: "Testo mancante" });
 
-  const urlRegex = /(https?:\/\/[^\s]+?\.(?:png|jpg|jpeg|gif|webp))/gi;
-  const urls = text.match(urlRegex) || [];
-
-  for (const url of urls) {
-    const nudityCheck = await checkNudity(url);
-    if (nudityCheck.nsfw || nudityCheck.nudity) {
-      return res.status(400).json({ message: "Il messaggio contiene immagini non consentite" });
-    }
-  }
-
   const msg = await Message.create({
     chatId: req.params.chatId,
     sender: req.user.schoolEmail,
@@ -896,13 +909,31 @@ app.post("/chats/:chatId/messages", verifyUser, postLimiterUser, verifyChatAcces
   });
 
   await Chat.findByIdAndUpdate(req.params.chatId, {
-    lastMessage: {
-      text,
-      sender: req.user.schoolEmail,
-      createdAt: msg.createdAt,
-      seen: false
-    },
+    lastMessage: { text, sender: req.user.schoolEmail, createdAt: msg.createdAt, seen: false },
     updatedAt: new Date()
+  });
+
+  setImmediate(async () => {
+    try {
+      const chat = req.chat;
+      const receiverEmail = chat.seller === req.user.schoolEmail ? chat.buyer : chat.seller;
+      const receiverTokens = await FcmToken.find({ schoolEmail: receiverEmail });
+
+      if (receiverTokens.length > 0) {
+        const payload = {
+          notification: {
+            title: `${req.user.firstName} ${req.user.lastName}`,
+            body: text.length > 80 ? text.slice(0, 80) + "..." : text,
+          },
+          data: { chatId: req.params.chatId, type: "NEW_MESSAGE" }
+        };
+
+        const tokens = receiverTokens.map(t => t.token);
+        await admin.messaging().sendEachForMulticast({ tokens, notification: payload.notification, data: payload.data });
+      }
+    } catch (err) {
+      console.error("Errore invio push istantanea:", err);
+    }
   });
 
   res.status(201).json(msg);
@@ -1068,9 +1099,7 @@ app.post("/create-checkout-session", verifyUser, async (req, res) => {
   }
 });
 
-app.post(
-  "/stripe-webhook",
-  bodyParser.raw({ type: "application/json" }),
+app.post("/stripe-webhook", express.raw({ type: "application/json" }),
   async (req, res) => {
     const sig = req.headers["stripe-signature"];
     let event;
@@ -1082,36 +1111,21 @@ app.post(
         process.env.STRIPE_WEBHOOK_SECRET
       );
     } catch (err) {
-      console.error("Webhook signature failed:", err.message);
       return res.status(400).send(`Webhook Error: ${err.message}`);
     }
 
     if (event.type === "checkout.session.completed") {
       const session = event.data.object;
-
-      const userEmail = session.metadata.userEmail;
-      const packageId = session.metadata.packageId;
-
+      const { userEmail, packageId } = session.metadata;
       const pkg = CREDIT_PACKAGES[packageId];
-      if (!pkg) {
-        console.error("Pacchetto non valido dal webhook:", packageId);
-        return res.status(400).send("Pacchetto non valido");
-      }
 
-      try {
-        const user = await User.findOneAndUpdate(
+      if (pkg) {
+        await User.updateOne(
           { schoolEmail: userEmail },
-          { $inc: { credits: pkg.credits } },
-          { new: true }
+          { $inc: { credits: pkg.credits } }
         );
-        if (!user) throw new Error("Utente non trovato");
-
-        console.log(`Aggiunti ${pkg.credits} crediti a ${userEmail}`);
-      } catch (e) {
-        console.error("Errore assegnazione crediti:", e.message);
       }
     }
-
     res.json({ received: true });
   }
 );
