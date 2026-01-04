@@ -627,7 +627,7 @@ app.post("/add-books", verifyUser, postLimiterUser, async (req, res) => {
   }
 });
 
-app.post("/books/like", verifyUser, async (req, res) => {
+app.post("/books/like", verifyUser, postLimiterUser, async (req, res) => {
   const { bookId } = req.body;
   const userEmail = req.user.schoolEmail;
   if (!bookId) return res.status(400).json({ message: "bookId mancante" });
@@ -875,6 +875,10 @@ app.post("/create-checkout-session", verifyUser, async (req, res) => {
   } catch (e) {
     res.status(500).json({ message: "Errore creazione sessione" });
   }
+});
+
+app.get("/credits", verifyUser, async (req, res) => {
+  res.json({ credits: req.user.credits });
 });
 
 async function sendEmailViaBridge({ to, subject, text, html }) {
