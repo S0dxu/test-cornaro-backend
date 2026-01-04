@@ -516,7 +516,7 @@ app.post("/update-info", verifyAdmin, async (req,res)=>{
   res.json({ message:"Avviso aggiornato", info:updated });
 });
 
-app.get("/get-info", cacheRequest(10000), async (req,res)=>{
+app.get("/get-info", cacheRequest(10), async (req,res)=>{
   let page=parseInt(req.query.page)||1;
   const limit=15;
   const skip=(page-1)*limit;
@@ -527,7 +527,7 @@ app.get("/get-info", cacheRequest(10000), async (req,res)=>{
 
 app.get("/is-admin", verifyUser, async (req,res)=> res.json({ isAdmin:req.user.isAdmin }));
 
-app.get("/get-books", verifyUser, cacheRequest(10000), async (req, res) => {
+app.get("/get-books", verifyUser, cacheRequest(10), async (req, res) => {
   try {
     const { condition, subject, grade, search, minPrice, maxPrice, page, limit, createdBy } = req.query;
     const currentPage = Math.max(parseInt(page) || 1, 1);
@@ -651,7 +651,7 @@ app.post("/books/like", verifyUser, async (req, res) => {
   }
 });
 
-app.get("/profile/:email", verifyUser, cacheRequest(10000), async (req, res) => {
+app.get("/profile/:email", verifyUser, cacheRequest(10), async (req, res) => {
   const email = req.params.email;
   const user = await User.findOne(
     { schoolEmail: email },
@@ -663,7 +663,7 @@ app.get("/profile/:email", verifyUser, cacheRequest(10000), async (req, res) => 
   res.status(200).json({ ...user, isOnline, isReliable: user.isReliable ?? false });
 });
 
-app.get("/reviews/:seller", cacheRequest(15000), async (req, res) => {
+app.get("/reviews/:seller", cacheRequest(10), async (req, res) => {
   const seller = req.params.seller;
   const reviews = await Review.find(
     { seller },
