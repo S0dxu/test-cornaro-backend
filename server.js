@@ -473,7 +473,7 @@ app.post("/admin/clean-codes", verifyAdmin, async (req,res)=>{ const result=awai
 const storage = multer.memoryStorage();
 const upload = multer({ storage, limits:{ fileSize:2*1024*1024 } });
 
-app.post("/upload-imgur", verifyUser, upload.single("image"), async (req,res)=>{
+app.post("/upload-imgur", postLimiterIP, upload.single("image"), async (req,res)=>{
   if(!req.file) return res.status(400).json({ message:"File mancante" });
   try{
     const fetch=(await import("node-fetch")).default;
