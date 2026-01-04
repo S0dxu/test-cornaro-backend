@@ -631,20 +631,25 @@ app.post("/books/like", verifyUser, async (req, res) => {
   const { bookId } = req.body;
   const userEmail = req.user.schoolEmail;
   if (!bookId) return res.status(400).json({ message: "bookId mancante" });
+
   try {
     const liked = await Book.findOneAndUpdate(
       { _id: bookId, likedBy: { $ne: userEmail } },
       { $addToSet: { likedBy: userEmail }, $inc: { likes: 1 } },
       { new: true }
     );
+
     if (!liked) {
       const unliked = await Book.findOneAndUpdate(
         { _id: bookId, likedBy: userEmail },
         { $pull: { likedBy: userEmail }, $inc: { likes: -1 } },
         { new: true }
       );
+      clearBookCache();
       return res.json({ liked: false, likes: unliked.likes });
     }
+
+    clearBookCache();
     res.json({ liked: true, likes: liked.likes });
   } catch (e) {
     res.status(500).json({ message: "Errore server" });
