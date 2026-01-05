@@ -774,20 +774,67 @@ app.get("/chats/:chatId/messages", verifyUser, verifyChatAccess, async (req, res
 app.post("/chats/:chatId/messages", verifyUser, postLimiterUser, verifyChatAccess, async (req, res) => {
   const { text } = req.body;
   if (!text) return res.status(400).json({ message: "Testo mancante" });
-  const msg = await Message.create({ chatId: req.params.chatId, sender: req.user.schoolEmail, text });
-  await Chat.findByIdAndUpdate(req.params.chatId, { lastMessage: { text, sender: req.user.schoolEmail, createdAt: msg.createdAt, seen: false }, updatedAt: new Date() });
+
+  const msg = await Message.create({ 
+    chatId: req.params.chatId, 
+    sender: req.user.schoolEmail, 
+    text 
+  });
+
+  await Chat.findByIdAndUpdate(req.params.chatId, { 
+    lastMessage: { 
+      text, 
+      sender: req.user.schoolEmail, 
+      createdAt: msg.createdAt, 
+      seen: false 
+    }, 
+    updatedAt: new Date() 
+  });
+
   setImmediate(async () => {
     try {
       const chat = req.chat;
       const receiverEmail = chat.seller === req.user.schoolEmail ? chat.buyer : chat.seller;
-      const receiverTokens = await FcmToken.find({ schoolEmail: receiverEmail });
-      if (receiverTokens.length > 0) {
-        const payload = { notification: { title: `${req.user.firstName} ${req.user.lastName}`, body: text.length > 80 ? text.slice(0, 80) + "..." : text }, data: { chatId: req.params.chatId, type: "NEW_MESSAGE" } };
-        const tokens = receiverTokens.map(t => t.token);
-        await admin.messaging().sendEachForMulticast({ tokens, notification: payload.notification, data: payload.data });
+      
+      const receiverUser = await User.findOne({ schoolEmail: receiverEmail });
+      if (!receiverUser || !receiverUser.notifications.push) {
+        await Message.updateOne({ _id: msg._id }, { notified: true });
+        return;
       }
-    } catch (err) {}
+
+      const receiverTokens = await FcmToken.find({ schoolEmail: receiverEmail });
+      
+      if (receiverTokens.length > 0) {
+        const payload = { 
+          notification: { 
+            title: `${req.user.firstName} ${req.user.lastName}`, 
+            body: text.length > 80 ? text.slice(0, 80) + "..." : text 
+          }, 
+          data: { 
+            chatId: req.params.chatId.toString(), 
+            type: "NEW_MESSAGE" 
+          } 
+        };
+        const tokens = receiverTokens.map(t => t.token);
+
+        const response = await admin.messaging().sendEachForMulticast({ 
+          tokens, 
+          notification: payload.notification, 
+          data: payload.data 
+        });
+        await Message.updateOne({ _id: msg._id }, { notified: true });
+
+        response.responses.forEach((resp, idx) => {
+          if (!resp.success && resp.error?.code === "messaging/registration-token-not-registered") {
+            FcmToken.deleteOne({ token: tokens[idx] }).catch(() => {});
+          }
+        });
+      }
+    } catch (err) {
+      console.error("Errore invio notifica push immediata:", err);
+    }
   });
+
   res.status(201).json(msg);
 });
 
