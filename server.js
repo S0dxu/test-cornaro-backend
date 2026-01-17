@@ -187,6 +187,21 @@ const userSchema = new mongoose.Schema({
     email: { type: Boolean, default: true }
   }
 });
+userSchema.pre("save", function (next) {
+  if (this.isModified("firstName")) {
+    this.firstName = encrypt(this.firstName);
+  }
+
+  if (this.isModified("lastName")) {
+    this.lastName = encrypt(this.lastName);
+  }
+
+  if (this.isModified("instagram") && this.instagram) {
+    this.instagram = encrypt(this.instagram);
+  }
+
+  next();
+});
 const User = mongoose.model("User", userSchema);
 
 const codeSchema = new mongoose.Schema({ 
@@ -509,7 +524,15 @@ app.post("/login", postLimiterIP, authLimiter, async (req,res)=>{
   if(!match) { fail.count++; failedAttempts.set(key,fail); return res.status(400).json({ message:"Credenziali errate" }); }
   failedAttempts.delete(key);
   const token = jwt.sign({ id: schoolEmail }, SECRET_KEY);
-  res.json({ message:"Login riuscito", token, firstName:user.firstName,lastName:user.lastName,instagram:user.instagram||"",schoolEmail:user.schoolEmail,profileImage:user.profileImage||"" });
+  res.json({ 
+    message:"Login riuscito", 
+    token, 
+    firstName: decrypt(user.firstName), 
+    lastName: decrypt(user.lastName), 
+    instagram: user.instagram ? decrypt(user.instagram) : "", 
+    schoolEmail: user.schoolEmail, 
+    profileImage: user.profileImage || "" 
+  });
 });
 
 app.post("/admin/clean-codes", verifyAdmin, async (req,res)=>{ const result=await VerificationCode.deleteMany({ expiresAt:{ $lt:new Date() } }); res.json({ eliminati:result.deletedCount }); });
@@ -709,7 +732,12 @@ app.get("/profile/:email", verifyUser, cacheRequest(10), async (req, res) => {
   if (!user) return res.status(404).json({ message: "Utente non trovato" });
   const ONLINE_THRESHOLD = 5 * 60 * 1000;
   const isOnline = user.lastSeenAt && Date.now() - new Date(user.lastSeenAt).getTime() < ONLINE_THRESHOLD;
-  res.status(200).json({ ...user, isOnline, isReliable: user.isReliable ?? false });
+  res.status(200).json({
+    ...user,
+    firstName: decrypt(user.firstName),
+    lastName: decrypt(user.lastName),
+    instagram: user.instagram ? decrypt(user.instagram) : ""
+  });
 });
 
 app.get("/reviews/:seller", cacheRequest(10), async (req, res) => {
