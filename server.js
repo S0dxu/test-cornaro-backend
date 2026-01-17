@@ -10,6 +10,14 @@ require("dotenv").config();
 const admin = require("firebase-admin");
 const stripe = require("stripe")(process.env.STRIPE_SECRET_KEY);
 const NodeCache = require("node-cache");
+const crypto = require("crypto");
+
+const ENC_KEY = Buffer.from(process.env.DATA_ENCRYPTION_KEY, "hex");
+if (ENC_KEY.length !== 32) {
+  throw new Error("INVALID ENCRYPTION_KEY");
+}
+
+const ALGO = "aes-256-gcm";
 
 admin.initializeApp({
   credential: admin.credential.cert({
@@ -34,6 +42,42 @@ app.use(cors({
   methods: ["GET", "POST"], 
   allowedHeaders: ["Content-Type", "Authorization", "stripe-signature"] 
 }));
+
+function encrypt(text) {
+  const iv = crypto.randomBytes(12);
+  const cipher = crypto.createCipheriv(ALGO, ENC_KEY, iv);
+
+  const encrypted = Buffer.concat([
+    cipher.update(text, "utf8"),
+    cipher.final()
+  ]);
+
+  const tag = cipher.getAuthTag();
+
+  // formato: iv:tag:ciphertext (base64)
+  return `${iv.toString("base64")}:${tag.toString("base64")}:${encrypted.toString("base64")}`;
+}
+
+function decrypt(payload) {
+  try {
+    const [ivB64, tagB64, dataB64] = payload.split(":");
+    if (!ivB64 || !tagB64 || !dataB64) return payload;
+
+    const iv = Buffer.from(ivB64, "base64");
+    const tag = Buffer.from(tagB64, "base64");
+    const encrypted = Buffer.from(dataB64, "base64");
+
+    const decipher = crypto.createDecipheriv(ALGO, ENC_KEY, iv);
+    decipher.setAuthTag(tag);
+
+    return Buffer.concat([
+      decipher.update(encrypted),
+      decipher.final()
+    ]).toString("utf8");
+  } catch {
+    return payload;
+  }
+}
 
 app.post("/stripe-webhook", express.raw({ type: "application/json" }), async (req, res) => {
   const sig = req.headers["stripe-signature"];
@@ -756,7 +800,7 @@ app.get("/chats", verifyUser, async (req, res) => {
     const me = req.user.schoolEmail;
     const other = chat.seller === me ? chat.buyer : chat.seller;
     const bookInfo = chat.bookId ? { title: chat.bookId.title, image: chat.bookId.images[0] || null, price: chat.bookId.price } : null;
-    return { _id: chat._id, me, other, lastMessage: chat.lastMessage || null, updatedAt: chat.updatedAt, book: bookInfo };
+    return { _id: chat._id, me, other, lastMessage: chat.lastMessage ? { ...chat.lastMessage, text: decrypt(chat.lastMessage.text) } : null, updatedAt: chat.updatedAt, book: bookInfo };
   });
   res.json(mappedChats);
 });
@@ -767,7 +811,13 @@ app.get("/chats/:chatId/messages", verifyUser, verifyChatAccess, async (req, res
     await Chat.updateOne({ _id: req.chat._id }, { $set: { "lastMessage.seen": true } });
   }
   const messages = await Message.find({ chatId: req.params.chatId }).sort({ createdAt: -1 }).skip(parseInt(skip)).limit(parseInt(limit)).lean();
-  const mapped = messages.map(msg => ({ _id: msg._id, sender: msg.sender, text: msg.text, createdAt: msg.createdAt, isMe: msg.sender === req.user.schoolEmail }));
+  const mapped = messages.map(msg => ({
+    _id: msg._id,
+    sender: msg.sender,
+    text: decrypt(msg.text),
+    createdAt: msg.createdAt,
+    isMe: msg.sender === req.user.schoolEmail
+  }));
   res.json(mapped.reverse());
 });
 
@@ -775,19 +825,21 @@ app.post("/chats/:chatId/messages", verifyUser, postLimiterUser, verifyChatAcces
   const { text } = req.body;
   if (!text) return res.status(400).json({ message: "Testo mancante" });
 
+  const encryptedText = encrypt(text);
+
   const msg = await Message.create({ 
     chatId: req.params.chatId, 
     sender: req.user.schoolEmail, 
-    text 
+    text: encryptedText
   });
 
   await Chat.findByIdAndUpdate(req.params.chatId, { 
     lastMessage: { 
-      text, 
+      text: encryptedText,
       sender: req.user.schoolEmail, 
       createdAt: msg.createdAt, 
       seen: false 
-    }, 
+    },
     updatedAt: new Date() 
   });
 
