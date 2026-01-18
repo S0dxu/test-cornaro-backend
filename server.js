@@ -18,6 +18,7 @@ if (ENC_KEY.length !== 32) {
 }
 
 const ALGO = "aes-256-gcm";
+const CREDITS_ENABLED = false;
 
 admin.initializeApp({
   credential: admin.credential.cert({
@@ -79,7 +80,7 @@ function decrypt(payload) {
   }
 }
 
-app.post("/stripe-webhook", express.raw({ type: "application/json" }), async (req, res) => {
+/* app.post("/stripe-webhook", express.raw({ type: "application/json" }), async (req, res) => {
   const sig = req.headers["stripe-signature"];
   let event;
 
@@ -109,7 +110,7 @@ app.post("/stripe-webhook", express.raw({ type: "application/json" }), async (re
   }
 
   res.json({ received: true });
-});
+}); */
 
 app.use(express.json());
 
@@ -661,12 +662,16 @@ app.post("/add-books", verifyUser, postLimiterUser, async (req, res) => {
     session.startTransaction();
 
     try {
-      const updatedUser = await User.findOneAndUpdate(
-        { _id: req.user._id, credits: { $gte: 10 } },
-        { $inc: { credits: -10 } },
-        { session, new: true }
-      );
-      if (!updatedUser) throw new Error("Crediti insufficienti");
+      let updatedUser = req.user;
+
+      if (CREDITS_ENABLED) {
+        updatedUser = await User.findOneAndUpdate(
+          { _id: req.user._id, credits: { $gte: 10 } },
+          { $inc: { credits: -10 } },
+          { session, new: true }
+        );
+        if (!updatedUser) throw new Error("Crediti insufficienti");
+      }
 
       const [newBook] = await Book.create([{
         title,
@@ -683,7 +688,11 @@ app.post("/add-books", verifyUser, postLimiterUser, async (req, res) => {
       await session.commitTransaction();
       session.endSession();
       clearBookCache();
-      return res.status(201).json({ message: "Libro pubblicato", creditsLeft: updatedUser.credits, book: newBook });
+      return res.status(201).json({
+        message: "Libro pubblicato",
+        creditsLeft: CREDITS_ENABLED ? updatedUser.credits : null,
+        book: newBook
+      });
     } catch (error) {
       await session.abortTransaction();
       session.endSession();
@@ -985,7 +994,7 @@ app.get("/user/notifications", verifyUser, async (req,res) => {
   res.json(req.user.notifications);
 });
 
-app.post("/create-checkout-session", verifyUser, async (req, res) => {
+/* app.post("/create-checkout-session", verifyUser, async (req, res) => {
   const { packageId } = req.body;
   const pkg = CREDIT_PACKAGES[packageId];
   if (!pkg) return res.status(400).json({ message: "Pacchetto non valido" });
@@ -1006,7 +1015,7 @@ app.post("/create-checkout-session", verifyUser, async (req, res) => {
 
 app.get("/credits", verifyUser, async (req, res) => {
   res.json({ credits: req.user.credits });
-});
+}); */
 
 async function sendEmailViaBridge({ to, subject, text, html }) {
   const fetch = (await import("node-fetch")).default;
