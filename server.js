@@ -632,8 +632,8 @@ app.get("/get-books", verifyUser, cacheRequest(10), async (req, res) => {
       images: book.images,
       likes: book.likes,
       likedByMe: book.likedBy.includes(req.user.schoolEmail),
-      createdBy: book.createdBy,                            // email reale
-      createdByMe: book.createdBy === req.user.schoolEmail ? "me" : book.createdBy, // "me" se è l’utente loggato
+      createdBy: book.createdBy,
+      const createdByMe = book.createdBy === req.user.schoolEmail;
       createdAt: book.createdAt,
       description: book.description || "",
       isbn: book.isbn || "",  
