@@ -645,9 +645,21 @@ app.get("/get-books", verifyUser, cacheRequest(10), async (req, res) => {
 
 app.get("/get-favorite-books", verifyUser, async (req, res) => {
   try {
+    const page = parseInt(req.query.page) || 1;
+    const limit = 10;
+    const skip = (page - 1) * limit;
+
+    const totalBooks = await Book.countDocuments({
+      likedBy: req.user.schoolEmail
+    });
+
     const books = await Book.find({
       likedBy: req.user.schoolEmail
-    }).sort({ createdAt: -1 }).lean();
+    })
+      .sort({ createdAt: -1 })
+      .skip(skip)
+      .limit(limit)
+      .lean();
 
     const result = books.map(book => ({
       _id: book._id,
@@ -665,7 +677,11 @@ app.get("/get-favorite-books", verifyUser, async (req, res) => {
       isbn: book.isbn || ""
     }));
 
-    res.json({ books: result });
+    res.json({
+      books: result,
+      currentPage: page,
+      totalPages: Math.ceil(totalBooks / limit)
+    });
   } catch (e) {
     res.status(500).json({ message: "Errore caricamento preferiti" });
   }
