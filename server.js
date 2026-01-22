@@ -645,6 +645,33 @@ app.get("/get-books", verifyUser, cacheRequest(10), async (req, res) => {
   }
 });
 
+app.post("/delete-book", verifyUser, async (req, res) => {
+  try {
+    const { bookId } = req.body;
+
+    if (!bookId) {
+      return res.status(400).json({ message: "bookId mancante" });
+    }
+
+    const book = await Book.findById(bookId);
+
+    if (!book) {
+      return res.status(404).json({ message: "Libro non trovato" });
+    }
+
+    if (book.createdBy !== req.user.schoolEmail) {
+      return res.status(403).json({ message: "Non autorizzato a eliminare questo libro" });
+    }
+
+    await Book.findByIdAndDelete(bookId);
+
+    res.status(200).json({ message: "Libro eliminato correttamente" });
+  } catch (error) {
+    console.error("Errore eliminazione libro:", error);
+    res.status(500).json({ message: "Errore server durante l'eliminazione del libro" });
+  }
+});
+
 app.get("/get-favorite-books", verifyUser, async (req, res) => {
   try {
     const page = parseInt(req.query.page) || 1;
