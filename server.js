@@ -632,11 +632,13 @@ app.get("/get-books", verifyUser, cacheRequest(10), async (req, res) => {
       images: book.images,
       likes: book.likes,
       likedByMe: book.likedBy.includes(req.user.schoolEmail),
-      createdBy: book.createdBy,
+      createdBy: book.createdBy,                            // email reale
+      createdByMe: book.createdBy === req.user.schoolEmail ? "me" : book.createdBy, // "me" se è l’utente loggato
       createdAt: book.createdAt,
       description: book.description || "",
       isbn: book.isbn || "",  
     }));
+
     res.json({ books: booksWithLikes, total, page: currentPage, totalPages: Math.ceil(total / booksLimit) });
   } catch (e) {
     res.status(500).json({ message: "Errore caricamento libri" });
