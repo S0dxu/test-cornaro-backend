@@ -633,7 +633,7 @@ app.get("/get-books", verifyUser, cacheRequest(10), async (req, res) => {
       likes: book.likes,
       likedByMe: book.likedBy.includes(req.user.schoolEmail),
       createdBy: book.createdBy,
-      const createdByMe = book.createdBy === req.user.schoolEmail;
+      createdByMe: book.createdBy === req.user.schoolEmail ? true : false,
       createdAt: book.createdAt,
       description: book.description || "",
       isbn: book.isbn || "",  
