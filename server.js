@@ -183,6 +183,7 @@ const userSchema = new mongoose.Schema({
   credits: { type: Number, default: 50, min: 0 },
   lastSeenAt: { type: Date, default: null },
   lastSeenUpdateAt: { type: Date, default: null },
+  active: { type: Boolean, default: true },
   notifications: {
     push: { type: Boolean, default: true },
     email: { type: Boolean, default: true }
@@ -469,11 +470,13 @@ app.post("/register/request", postLimiterIP, async (req,res)=>{
 
 app.post("/register/verify", postLimiterIP, authLimiter, async (req, res) => {
   const { firstName, lastName, instagram, schoolEmail, password, code, profileImage } = req.body;
-  if (!firstName || !lastName || !schoolEmail || !password || !code) return res.status(400).json({ message: "Campi obbligatori mancanti" });
+  if (!firstName || !lastName || !schoolEmail || !password || !code) 
+    return res.status(400).json({ message: "Campi obbligatori mancanti" });
 
   const key = schoolEmail;
   const fail = failedAttempts.get(key) || { count: 0, lock: 0 };
-  if (fail.lock > Date.now()) return res.status(429).json({ message: "Bloccato temporaneamente" });
+  if (fail.lock > Date.now()) 
+    return res.status(429).json({ message: "Bloccato temporaneamente" });
 
   const record = await VerificationCode.findOne({ schoolEmail });
   if (!record || record.code !== code) {
@@ -487,8 +490,8 @@ app.post("/register/verify", postLimiterIP, authLimiter, async (req, res) => {
     return res.status(400).json({ message: "Codice non valido" });
   }
 
-  if (record.expiresAt < new Date()) return res.status(400).json({ message: "Codice scaduto" });
-  if (await User.findOne({ schoolEmail })) return res.status(400).json({ message: "Utente già esistente" });
+  if (record.expiresAt < new Date()) 
+    return res.status(400).json({ message: "Codice scaduto" });
 
   let validProfileImage = "";
   if (profileImage) {
@@ -506,6 +509,22 @@ app.post("/register/verify", postLimiterIP, authLimiter, async (req, res) => {
   }
 
   const hashed = await bcrypt.hash(password, 10);
+  const existingUser = await User.findOne({ schoolEmail });
+
+  if (existingUser && existingUser.active) 
+    return res.status(400).json({ message: "Utente già esistente" });
+
+  if (existingUser && !existingUser.active) {
+    await User.updateOne(
+      { _id: existingUser._id },
+      { firstName, lastName, instagram: instagram || "", password: hashed, profileImage: validProfileImage, active: true }
+    );
+    await VerificationCode.deleteOne({ schoolEmail });
+    failedAttempts.delete(key);
+    const token = jwt.sign({ id: schoolEmail }, SECRET_KEY);
+    return res.status(201).json({ message: "Account riattivato", token });
+  }
+
   await User.create({ firstName, lastName, instagram: instagram || "", schoolEmail, password: hashed, profileImage: validProfileImage });
   await VerificationCode.deleteOne({ schoolEmail });
   failedAttempts.delete(key);
@@ -519,7 +538,8 @@ app.post("/login", postLimiterIP, authLimiter, async (req,res)=>{
   const key=schoolEmail;
   const fail=failedAttempts.get(key)||{ count:0, lock:0 };
   if(fail.lock>Date.now()) return res.status(429).json({ message:"Bloccato temporaneamente" });
-  const user = await User.findOne({ schoolEmail });
+  const user = await User.findOne({ schoolEmail, active: true });
+
   if(!user) { fail.count++; failedAttempts.set(key,fail); return res.status(400).json({ message:"Credenziali errate" }); }
   const match = await bcrypt.compare(password,user.password);
   if(!match) { fail.count++; failedAttempts.set(key,fail); return res.status(400).json({ message:"Credenziali errate" }); }
@@ -603,6 +623,8 @@ app.get("/get-books", verifyUser, cacheRequest(10), async (req, res) => {
     const skip = (currentPage - 1) * booksLimit;
 
     let query = {};
+    const activeUsers = await User.find({ active: true }).select("schoolEmail");
+    query.createdBy = { $in: activeUsers.map(u => u.schoolEmail) };
     if (condition && condition !== "Tutte") query.condition = condition;
     if (subject && subject !== "Tutte") query.subject = subject;
     if (grade && grade !== "Tutte") query.grade = grade;
@@ -808,7 +830,7 @@ app.post("/books/like", verifyUser, postLimiterUser, async (req, res) => {
 app.get("/profile/:email", verifyUser, cacheRequest(10), async (req, res) => {
   const email = req.params.email;
   const user = await User.findOne(
-    { schoolEmail: email },
+    { schoolEmail: email, active: true },
     { firstName: 1, lastName: 1, profileImage: 1, instagram: 1, isReliable: 1, averageRating: 1, ratingsCount: 1, lastSeenAt: 1 }
   ).lean();
   if (!user) return res.status(404).json({ message: "Utente non trovato" });
@@ -1065,6 +1087,20 @@ app.post("/user/notifications", verifyUser, async (req, res) => {
 
 app.get("/user/notifications", verifyUser, async (req,res) => {
   res.json(req.user.notifications);
+});
+
+app.post("/user/deactivate", verifyUser, async (req, res) => {
+  const { password } = req.body;
+  if (!password) return res.status(400).json({ message: "Password richiesta" });
+
+  const user = await User.findById(req.user._id);
+  if (!user || !user.active) return res.status(400).json({ message: "Utente non trovato o già disattivato" });
+
+  const match = await bcrypt.compare(password, user.password);
+  if (!match) return res.status(401).json({ message: "Password errata" });
+
+  await User.updateOne({ _id: user._id }, { active: false });
+  res.json({ message: "Account disattivato correttamente" });
 });
 
 /* app.post("/create-checkout-session", verifyUser, async (req, res) => {
