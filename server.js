@@ -121,15 +121,15 @@ async function verifyUser(req, res, next) {
   try {
     const payload = jwt.verify(token, SECRET_KEY);
     const user = await User.findOne({ schoolEmail: payload.id });
+    
     if (!user) return res.status(401).json({ message: "Utente non trovato" });
+    
+    if (!user.active) return res.status(403).json({ message: "Account disattivato" });
 
     const now = Date.now();
     const UPDATE_INTERVAL = 5 * 60 * 1000;
 
-    if (
-      !user.lastSeenUpdateAt ||
-      now - user.lastSeenUpdateAt.getTime() > UPDATE_INTERVAL
-    ) {
+    if (!user.lastSeenUpdateAt || now - user.lastSeenUpdateAt.getTime() > UPDATE_INTERVAL) {
       User.updateOne(
         { _id: user._id },
         { lastSeenAt: new Date(now), lastSeenUpdateAt: new Date(now) }
