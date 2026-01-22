@@ -441,7 +441,11 @@ app.post("/register/request", postLimiterIP, async (req,res)=>{
   const { schoolEmail } = req.body;
   if(!schoolEmail) return res.status(400).json({ message: "Email richiesta" });
   if(!isValidSchoolEmail(schoolEmail)) return res.status(400).json({ message: "Email non valida" });
-  if(await User.findOne({ schoolEmail })) return res.status(400).json({ message: "Utente già registrato" });
+  const existingUser = await User.findOne({ schoolEmail });
+
+  if (existingUser && existingUser.active) {
+      return res.status(400).json({ message: "Utente già registrato" });
+  }
   const now = Date.now();
   if(emailCooldown.has(schoolEmail) && now-emailCooldown.get(schoolEmail)<60000) return res.status(429).json({ message: "Attendi 60 secondi" });
   const code = generateCode();
