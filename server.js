@@ -643,6 +643,34 @@ app.get("/get-books", verifyUser, cacheRequest(10), async (req, res) => {
   }
 });
 
+app.get("/get-favorite-books", verifyUser, async (req, res) => {
+  try {
+    const books = await Book.find({
+      likedBy: req.user.schoolEmail
+    }).sort({ createdAt: -1 }).lean();
+
+    const result = books.map(book => ({
+      _id: book._id,
+      title: book.title,
+      condition: book.condition,
+      price: book.price,
+      subject: book.subject,
+      grade: book.grade,
+      images: book.images,
+      likes: book.likes,
+      likedByMe: true,
+      createdBy: book.createdBy,
+      createdAt: book.createdAt,
+      description: book.description || "",
+      isbn: book.isbn || ""
+    }));
+
+    res.json({ books: result });
+  } catch (e) {
+    res.status(500).json({ message: "Errore caricamento preferiti" });
+  }
+});
+
 app.post("/add-books", verifyUser, postLimiterUser, async (req, res) => {
   const { title, condition, price, subject, grade, images, description, isbn } = req.body;
   if (!title || !condition || !price || !subject || !grade || !images)
