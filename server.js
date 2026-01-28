@@ -1180,9 +1180,23 @@ app.get("/credits", verifyUser, async (req, res) => {
   res.json({ credits: req.user.credits });
 }); */
 
-function isPremium(user) {
+/* function isPremium(user) {
   return user.premiumUntil && user.premiumUntil > new Date();
-}
+} */
+
+app.get("/user/premium", verifyUser, (req, res) => {
+  const now = new Date();
+
+  const isPremium =
+    req.user.premiumUntil &&
+    req.user.premiumUntil instanceof Date &&
+    req.user.premiumUntil > now;
+
+  res.json({
+    premium: isPremium,
+    premiumUntil: req.user.premiumUntil
+  });
+});
 
 app.post("/premium/create-checkout", verifyUser, async (req, res) => {
   try {
