@@ -80,6 +80,55 @@ function decrypt(payload) {
   }
 }
 
+app.post(
+  "/stripe-webhook",
+  express.raw({ type: "application/json" }),
+  async (req, res) => {
+    const sig = req.headers["stripe-signature"];
+    let event;
+
+    try {
+      event = stripe.webhooks.constructEvent(
+        req.body,
+        sig,
+        process.env.STRIPE_WEBHOOK_SECRET
+      );
+    } catch (err) {
+      console.error("Webhook error:", err.message);
+      return res.status(400).send(`Webhook Error`);
+    }
+
+    if (event.type === "checkout.session.completed") {
+      const session = event.data.object;
+      const { userEmail, type } = session.metadata || {};
+
+      if (type === "PREMIUM_YEARLY" && userEmail) {
+        const now = new Date();
+
+        const user = await User.findOne({ schoolEmail: userEmail });
+        if (user) {
+          const baseDate =
+            user.premiumUntil && user.premiumUntil > now
+              ? user.premiumUntil
+              : now;
+
+          const newPremiumUntil = new Date(baseDate);
+          newPremiumUntil.setFullYear(newPremiumUntil.getFullYear() + 1);
+
+          await User.updateOne(
+            { schoolEmail: userEmail },
+            { premiumUntil: newPremiumUntil }
+          );
+
+          console.log(`Premium attivato per ${userEmail} fino al ${newPremiumUntil}`);
+        }
+      }
+    }
+
+    res.json({ received: true });
+  }
+);
+
 /* app.post("/stripe-webhook", express.raw({ type: "application/json" }), async (req, res) => {
   const sig = req.headers["stripe-signature"];
   let event;
@@ -187,7 +236,8 @@ const userSchema = new mongoose.Schema({
   notifications: {
     push: { type: Boolean, default: true },
     email: { type: Boolean, default: true }
-  }
+  },
+  premiumUntil: { type: Date, default: null }
 });
 userSchema.pre("save", function (next) {
   if (this.isModified("firstName")) {
@@ -1129,6 +1179,51 @@ app.post("/user/deactivate", verifyUser, async (req, res) => {
 app.get("/credits", verifyUser, async (req, res) => {
   res.json({ credits: req.user.credits });
 }); */
+
+function isPremium(user) {
+  return user.premiumUntil && user.premiumUntil > new Date();
+}
+
+app.post("/premium/create-checkout", verifyUser, async (req, res) => {
+  try {
+    const session = await stripe.checkout.sessions.create({
+      payment_method_types: ["card"],
+      mode: "payment",
+      line_items: [
+        {
+          price_data: {
+            currency: "eur",
+            unit_amount: 199,
+            product_data: {
+              name: "Premium App Cornaro",
+              description: "Accesso premium valido 12 mesi"
+            }
+          },
+          quantity: 1
+        }
+      ],
+      success_url: `cornaro://premium-success`,
+      cancel_url: `cornaro://premium-cancel`,
+      metadata: {
+        userEmail: req.user.schoolEmail,
+        type: "PREMIUM_YEARLY"
+      }
+    });
+
+    res.json({ url: session.url });
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ message: "Errore creazione checkout premium" });
+  }
+});
+
+app.get("/user/premium", verifyUser, async (req, res) => {
+  const premium = req.user.premiumUntil && req.user.premiumUntil > new Date();
+  res.json({
+    premium,
+    premiumUntil: req.user.premiumUntil
+  });
+});
 
 async function sendEmailViaBridge({ to, subject, text, html }) {
   const fetch = (await import("node-fetch")).default;
