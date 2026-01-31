@@ -484,7 +484,7 @@ async function checkNudity(urlToCheck) {
     const data = await response.json();
     return data;
   } catch (e) {
-    return { nsfw: false, nudity: false };
+    return { nsfw: true, nudity: true };
   }
 }
 
@@ -1014,9 +1014,7 @@ app.get("/chats/:chatId/messages", verifyUser, verifyChatAccess, async (req, res
 app.post("/chats/:chatId/messages", verifyUser, postLimiterUser, verifyChatAccess, async (req, res) => {
   const { text } = req.body;
   if (!text) return res.status(400).json({ message: "Testo mancante" });
-  console.log(text);
   const match = text.match(IMGUR_REGEX);
-  console.log(match);
   if (match) {
     const nudityCheck = await checkNudity(match[0]);
     if (nudityCheck.nsfw || nudityCheck.nudity) {
