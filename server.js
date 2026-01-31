@@ -12,6 +12,9 @@ const stripe = require("stripe")(process.env.STRIPE_SECRET_KEY);
 const NodeCache = require("node-cache");
 const crypto = require("crypto");
 
+const fetch = (...args) =>
+  import("node-fetch").then(({ default: fetch }) => fetch(...args));
+
 const ENC_KEY = Buffer.from(process.env.DATA_ENCRYPTION_KEY, "hex");
 if (ENC_KEY.length !== 32) {
   throw new Error("INVALID ENCRYPTION_KEY");
@@ -27,6 +30,8 @@ admin.initializeApp({
     privateKey: process.env.FIREBASE_PRIVATE_KEY.replace(/\\n/g, "\n"),
   }),
 });
+
+const IMGUR_REGEX = /https:\/\/i\.imgur\.com\/\S+\.(?:png|jpg|jpeg|gif)/i;
 
 const CREDIT_PACKAGES = {
   basic: { credits: 50, price: 249 },
@@ -55,7 +60,6 @@ function encrypt(text) {
 
   const tag = cipher.getAuthTag();
 
-  // formato: iv:tag:ciphertext (base64)
   return `${iv.toString("base64")}:${tag.toString("base64")}:${encrypted.toString("base64")}`;
 }
 
@@ -574,14 +578,14 @@ app.post("/register/verify", postLimiterIP, authLimiter, async (req, res) => {
       { firstName, lastName, instagram: instagram || "", password: hashed, profileImage: validProfileImage, active: true }
     );
     await VerificationCode.deleteOne({ schoolEmail });
-    failedAttempts.delete(key);
+    failedAttempts.set(key, { count: 0, lock: 0 });
     const token = jwt.sign({ id: schoolEmail }, SECRET_KEY);
     return res.status(201).json({ message: "Account riattivato", token });
   }
 
   await User.create({ firstName, lastName, instagram: instagram || "", schoolEmail, password: hashed, profileImage: validProfileImage });
   await VerificationCode.deleteOne({ schoolEmail });
-  failedAttempts.delete(key);
+  failedAttempts.set(key, { count: 0, lock: 0 });
   const token = jwt.sign({ id: schoolEmail }, SECRET_KEY);
   res.status(201).json({ message: "Registrazione completata", token });
 });
@@ -597,7 +601,7 @@ app.post("/login", postLimiterIP, authLimiter, async (req,res)=>{
   if(!user) { fail.count++; failedAttempts.set(key,fail); return res.status(400).json({ message:"Credenziali errate" }); }
   const match = await bcrypt.compare(password,user.password);
   if(!match) { fail.count++; failedAttempts.set(key,fail); return res.status(400).json({ message:"Credenziali errate" }); }
-  failedAttempts.delete(key);
+  failedAttempts.set(key, { count: 0, lock: 0 });
   const token = jwt.sign({ id: schoolEmail }, SECRET_KEY);
   res.json({ 
     message:"Login riuscito", 
@@ -991,6 +995,8 @@ app.get("/chats", verifyUser, async (req, res) => {
   res.json(mappedChats);
 });
 
+
+
 app.get("/chats/:chatId/messages", verifyUser, verifyChatAccess, async (req, res) => {
   const { limit = 20, skip = 0 } = req.query;
   if (req.chat.lastMessage && req.chat.lastMessage.sender !== req.user.schoolEmail && req.chat.lastMessage.seen === false) {
@@ -1011,22 +1017,30 @@ app.post("/chats/:chatId/messages", verifyUser, postLimiterUser, verifyChatAcces
   const { text } = req.body;
   if (!text) return res.status(400).json({ message: "Testo mancante" });
 
+  const match = text.match(IMGUR_REGEX);
+  if (match) {
+    const nudityCheck = await checkNudity(match[0]);
+    if (nudityCheck.nsfw || nudityCheck.nudity) {
+      return res.status(400).json({ message: "Immagine non consentita" });
+    }
+  }
+
   const encryptedText = encrypt(text);
 
-  const msg = await Message.create({ 
-    chatId: req.params.chatId, 
-    sender: req.user.schoolEmail, 
+  const msg = await Message.create({
+    chatId: req.params.chatId,
+    sender: req.user.schoolEmail,
     text: encryptedText
   });
 
-  await Chat.findByIdAndUpdate(req.params.chatId, { 
-    lastMessage: { 
+  await Chat.findByIdAndUpdate(req.params.chatId, {
+    lastMessage: {
       text: encryptedText,
-      sender: req.user.schoolEmail, 
-      createdAt: msg.createdAt, 
-      seen: false 
+      sender: req.user.schoolEmail,
+      createdAt: msg.createdAt,
+      seen: false
     },
-    updatedAt: new Date() 
+    updatedAt: new Date()
   });
 
   setImmediate(async () => {
@@ -1045,8 +1059,14 @@ app.post("/chats/:chatId/messages", verifyUser, postLimiterUser, verifyChatAcces
       if (receiverTokens.length > 0) {
         const payload = { 
           notification: { 
-            title: `${req.user.firstName} ${req.user.lastName}`, 
-            body: text.length > 80 ? text.slice(0, 80) + "..." : text 
+            title: `${decrypt(req.user.firstName)} ${decrypt(req.user.lastName)}`,
+            body: (() => {
+              const cleanedText = text.replace(IMGUR_REGEX, "").trim();
+              if (!cleanedText) return "📷 Foto";
+              return cleanedText.length > 80
+                ? cleanedText.slice(0, 80) + "..."
+                : cleanedText;
+            })()
           }, 
           data: { 
             chatId: req.params.chatId.toString(), 
@@ -1229,14 +1249,6 @@ app.post("/premium/create-checkout", verifyUser, async (req, res) => {
     console.error(e);
     res.status(500).json({ message: "Errore creazione checkout premium" });
   }
-});
-
-app.get("/user/premium", verifyUser, async (req, res) => {
-  const premium = req.user.premiumUntil && req.user.premiumUntil > new Date();
-  res.json({
-    premium,
-    premiumUntil: req.user.premiumUntil
-  });
 });
 
 async function sendEmailViaBridge({ to, subject, text, html }) {
