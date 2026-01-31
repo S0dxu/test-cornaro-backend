@@ -995,8 +995,6 @@ app.get("/chats", verifyUser, async (req, res) => {
   res.json(mappedChats);
 });
 
-
-
 app.get("/chats/:chatId/messages", verifyUser, verifyChatAccess, async (req, res) => {
   const { limit = 20, skip = 0 } = req.query;
   if (req.chat.lastMessage && req.chat.lastMessage.sender !== req.user.schoolEmail && req.chat.lastMessage.seen === false) {
@@ -1016,8 +1014,9 @@ app.get("/chats/:chatId/messages", verifyUser, verifyChatAccess, async (req, res
 app.post("/chats/:chatId/messages", verifyUser, postLimiterUser, verifyChatAccess, async (req, res) => {
   const { text } = req.body;
   if (!text) return res.status(400).json({ message: "Testo mancante" });
-
+  console.log(text);
   const match = text.match(IMGUR_REGEX);
+  console.log(match);
   if (match) {
     const nudityCheck = await checkNudity(match[0]);
     if (nudityCheck.nsfw || nudityCheck.nudity) {
