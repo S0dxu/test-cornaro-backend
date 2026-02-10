@@ -11,6 +11,24 @@ const admin = require("firebase-admin");
 const stripe = require("stripe")(process.env.STRIPE_SECRET_KEY);
 const NodeCache = require("node-cache");
 const crypto = require("crypto");
+const { createClient } = require("redis");
+
+const redisClient = createClient({
+  url: process.env.REDIS_URL
+});
+
+redisClient.on("error", (err) => {
+  console.error("Redis error:", err.message);
+});
+
+(async () => {
+  try {
+    await redisClient.connect();
+    console.log("Redis connected");
+  } catch (err) {
+    console.error("Redis connection failed:", err);
+  }
+})();
 
 const fetch = (...args) =>
   import("node-fetch").then(({ default: fetch }) => fetch(...args));
@@ -484,7 +502,7 @@ async function checkNudity(urlToCheck) {
     const data = await response.json();
     return data;
   } catch (e) {
-    return { nsfw: true, nudity: true };
+    return { nsfw: false, nudity: false };
   }
 }
 
@@ -1014,6 +1032,7 @@ app.get("/chats/:chatId/messages", verifyUser, verifyChatAccess, async (req, res
 app.post("/chats/:chatId/messages", verifyUser, postLimiterUser, verifyChatAccess, async (req, res) => {
   const { text } = req.body;
   if (!text) return res.status(400).json({ message: "Testo mancante" });
+
   const match = text.match(IMGUR_REGEX);
   if (match) {
     const nudityCheck = await checkNudity(match[0]);
