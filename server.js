@@ -637,22 +637,118 @@ app.post("/admin/clean-codes", verifyAdmin, async (req,res)=>{ const result=awai
 const storage = multer.memoryStorage();
 const upload = multer({ storage, limits:{ fileSize:2*1024*1024 } });
 
-app.post("/upload-imgur", postLimiterIP, upload.single("image"), async (req,res)=>{
-  if(!req.file) return res.status(400).json({ message:"File mancante" });
-  try{
-    const fetch=(await import("node-fetch")).default;
-    const boundary="----WebKitFormBoundaryCheckNSFW";
-    const body=Buffer.concat([Buffer.from(`--${boundary}\r\n`),Buffer.from(`Content-Disposition: form-data; name="nudepic"; filename="${req.file.originalname}"\r\n`),Buffer.from(`Content-Type: ${req.file.mimetype}\r\n\r\n`),req.file.buffer,Buffer.from(`\r\n--${boundary}--\r\n`)]);
-    const nsfwResponse=await fetch("https://letspurify.askjitendra.com/send/data",{ method:"POST", headers:{"accept":"*/*","content-type":`multipart/form-data; boundary=${boundary}`}, body });
-    const nsfwData=await nsfwResponse.json();
-    if(nsfwData.status) return res.status(400).json({ message:"L'immagine non è consentita" });
-    const base64Image=req.file.buffer.toString("base64");
-    const imgurResponse=await fetch("https://api.imgur.com/3/upload",{ method:"POST", headers:{ Authorization:`Client-ID ${process.env.IMGUR_CLIENT_ID}` }, body:new URLSearchParams({ image:base64Image }) });
-    const imgurData=await imgurResponse.json();
-    if(imgurData.success) res.json({ link:imgurData.data.link });
-    else res.status(500).json({ message:"Errore caricamento Imgur" });
-  } catch(e){ res.status(500).json({ message:e.message }); }
-});
+app.post(
+  "/upload-imgur",
+  postLimiterIP,
+  upload.single("image"),
+  async (req, res) => {
+    if (!req.file)
+      return res
+        .status(400)
+        .json({ message: "File mancante" });
+
+    try {
+      const fetch = (await import("node-fetch"))
+        .default;
+
+      let nsfwBlocked = false;
+
+      try {
+        const boundary =
+          "----WebKitFormBoundaryCheckNSFW";
+
+        const body = Buffer.concat([
+          Buffer.from(`--${boundary}\r\n`),
+          Buffer.from(
+            `Content-Disposition: form-data; name="nudepic"; filename="${req.file.originalname}"\r\n`
+          ),
+          Buffer.from(
+            `Content-Type: ${req.file.mimetype}\r\n\r\n`
+          ),
+          req.file.buffer,
+          Buffer.from(
+            `\r\n--${boundary}--\r\n`
+          ),
+        ]);
+
+        const controller =
+          new AbortController();
+
+        const timeout = setTimeout(
+          () => controller.abort(),
+          5000
+        );
+
+        const nsfwResponse =
+          await fetch(
+            "https://letspurify.askjitendra.com/send/data",
+            {
+              method: "POST",
+              headers: {
+                accept: "*/*",
+                "content-type": `multipart/form-data; boundary=${boundary}`,
+              },
+              body,
+              signal: controller.signal,
+            }
+          );
+
+        clearTimeout(timeout);
+
+        if (nsfwResponse.ok) {
+          const nsfwData =
+            await nsfwResponse.json();
+
+          if (nsfwData?.status === true) {
+            nsfwBlocked = true;
+          }
+        }
+      } catch (_) {}
+
+      if (nsfwBlocked) {
+        return res.status(400).json({
+          message:
+            "L'immagine non è consentita",
+        });
+      }
+
+      const base64Image =
+        req.file.buffer.toString("base64");
+
+      const imgurResponse =
+        await fetch(
+          "https://api.imgur.com/3/upload",
+          {
+            method: "POST",
+            headers: {
+              Authorization: `Client-ID ${process.env.IMGUR_CLIENT_ID}`,
+            },
+            body: new URLSearchParams({
+              image: base64Image,
+            }),
+          }
+        );
+
+      const imgurData =
+        await imgurResponse.json();
+
+      if (imgurData.success) {
+        res.json({
+          link: imgurData.data.link,
+        });
+      } else {
+        res.status(500).json({
+          message:
+            "Errore caricamento Imgur",
+        });
+      }
+    } catch (e) {
+      res.status(500).json({
+        message: e.message,
+      });
+    }
+  }
+);
 
 app.post("/add-info", verifyAdmin, async (req,res)=>{
   const { title,message,type }=req.body;
