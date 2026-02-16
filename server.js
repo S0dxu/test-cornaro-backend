@@ -73,7 +73,7 @@ app.use(helmet({
 app.use(cors({ 
   origin: [
     "https://studenticornaro.site",
-    "*" // TODO to remove later
+    /* "*" // TODO to remove later */
   ],
   methods: ["GET", "POST"], 
   allowedHeaders: ["Content-Type", "Authorization", "stripe-signature"] 
@@ -502,7 +502,7 @@ const Message = mongoose.model("Message", messageSchema);
 const passwordResetSchema = new mongoose.Schema({
   schoolEmail: { type: String, required: true, index: true },
   tokenHash: { type: String, required: true, index: true },
-  expiresAt: { type: Date, required: true, index: true },
+  expiresAt: { type: Date, required: true }, // rimosso index: true
   used: { type: Boolean, default: false, index: true },
   ip: String,
   userAgent: String,
