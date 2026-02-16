@@ -13,7 +13,7 @@ const NodeCache = require("node-cache");
 const crypto = require("crypto");
 const { createClient } = require("redis");
 const helmet = require("helmet");
-const RedisStore = require("rate-limit-redis");
+const RedisStore = require("rate-limit-redis").default;
 
 const redisClient = createClient({
   url: process.env.REDIS_URL,
