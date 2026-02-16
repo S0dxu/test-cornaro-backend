@@ -12,9 +12,14 @@ const stripe = require("stripe")(process.env.STRIPE_SECRET_KEY);
 const NodeCache = require("node-cache");
 const crypto = require("crypto");
 const { createClient } = require("redis");
+const helmet = require("helmet");
+const RedisStore = require("rate-limit-redis");
 
 const redisClient = createClient({
-  url: process.env.REDIS_URL
+  url: process.env.REDIS_URL,
+  socket: {
+    reconnectStrategy: retries => Math.min(retries * 50, 2000)
+  }
 });
 
 redisClient.on("error", (err) => {
@@ -26,7 +31,7 @@ redisClient.on("error", (err) => {
     await redisClient.connect();
     console.log("Redis connected");
   } catch (err) {
-    console.error("Redis connection failed:", err);
+    console.error(err);
   }
 })();
 
@@ -61,8 +66,15 @@ const app = express();
 const PORT = process.env.PORT || 3000;
 const SECRET_KEY = process.env.JWT_SECRET;
 
+app.use(helmet({
+  contentSecurityPolicy: false
+}));
+
 app.use(cors({ 
-  origin: "*", 
+  origin: [
+    "https://studenticornaro.site",
+    "*" // TODO to remove later
+  ],
   methods: ["GET", "POST"], 
   allowedHeaders: ["Content-Type", "Authorization", "stripe-signature"] 
 }));
@@ -115,34 +127,50 @@ app.post(
         sig,
         process.env.STRIPE_WEBHOOK_SECRET
       );
-    } catch (err) {
-      console.error("Webhook error:", err.message);
-      return res.status(400).send(`Webhook Error`);
+    } catch {
+      return res.status(400).send("Invalid signature");
     }
+
+    const exists = await StripeEvent.findOne({
+      eventId: event.id
+    });
+
+    if (exists) {
+      return res.json({ received: true });
+    }
+
+    await StripeEvent.create({
+      eventId: event.id
+    });
 
     if (event.type === "checkout.session.completed") {
       const session = event.data.object;
-      const { userEmail, type } = session.metadata || {};
+      const { userEmail, type } =
+        session.metadata || {};
 
-      if (type === "PREMIUM_YEARLY" && userEmail) {
-        const now = new Date();
+      if (type === "PREMIUM_YEARLY") {
+        const user = await User.findOne({
+          schoolEmail: userEmail
+        });
 
-        const user = await User.findOne({ schoolEmail: userEmail });
         if (user) {
-          const baseDate =
-            user.premiumUntil && user.premiumUntil > now
+          const now = new Date();
+
+          const base =
+            user.premiumUntil &&
+            user.premiumUntil > now
               ? user.premiumUntil
               : now;
 
-          const newPremiumUntil = new Date(baseDate);
-          newPremiumUntil.setFullYear(newPremiumUntil.getFullYear() + 1);
+          const newDate = new Date(base);
+          newDate.setFullYear(
+            newDate.getFullYear() + 1
+          );
 
           await User.updateOne(
             { schoolEmail: userEmail },
-            { premiumUntil: newPremiumUntil }
+            { premiumUntil: newDate }
           );
-
-          console.log(`Premium attivato per ${userEmail} fino al ${newPremiumUntil}`);
         }
       }
     }
@@ -214,9 +242,36 @@ async function verifyUser(req, res, next) {
   }
 }
 
-const postLimiterIP = rateLimit({
+const createRedisLimiter = (max, windowMs) =>
+  rateLimit({
+    store: new RedisStore({
+      sendCommand: (...args) => redisClient.sendCommand(args)
+    }),
+    windowMs,
+    max,
+    standardHeaders: true,
+    legacyHeaders: false
+  }
+);
+
+async function redisCache(key, ttl, fetcher) {
+  const cached = await redisClient.get(key);
+  if (cached) return JSON.parse(cached);
+
+  const data = await fetcher();
+
+  await redisClient.setEx(
+    key,
+    ttl,
+    JSON.stringify(data)
+  );
+
+  return data;
+}
+
+/* const postLimiterIP = rateLimit({
   windowMs: 1000,
-  max: 2,
+  max: 5,
   standardHeaders: true,
   legacyHeaders: false,
   keyGenerator: (req) => req.ip,
@@ -234,7 +289,41 @@ const postLimiterUser = rateLimit({
   handler: (req, res) => {
     res.status(429).json({ message: "Limite richieste superato, riprova tra 1 secondo" });
   }
+}); */
+
+const postLimiterIP = rateLimit({
+  store: new RedisStore({
+    sendCommand: (...args) => redisClient.sendCommand(args),
+  }),
+  windowMs: 1000,
+  max: 5,
+  standardHeaders: true,
+  legacyHeaders: false,
+  keyGenerator: (req) => req.ip,
+  handler: (req, res) => {
+    res
+      .status(429)
+      .json({ message: "Limite richieste superato, riprova tra 1 secondo" });
+  },
 });
+
+const postLimiterUser = rateLimit({
+  store: new RedisStore({
+    sendCommand: (...args) => redisClient.sendCommand(args),
+  }),
+  windowMs: 1000,
+  max: 2,
+  standardHeaders: true,
+  legacyHeaders: false,
+  keyGenerator: (req) =>
+    req.user?.schoolEmail || req.ip,
+  handler: (req, res) => {
+    res
+      .status(429)
+      .json({ message: "Limite richieste superato, riprova tra 1 secondo" });
+  },
+});
+
 
 mongoose.connect(process.env.MONGO_URI);
 
@@ -410,6 +499,38 @@ const messageSchema = new mongoose.Schema({
 });
 const Message = mongoose.model("Message", messageSchema);
 
+const passwordResetSchema = new mongoose.Schema({
+  schoolEmail: { type: String, required: true, index: true },
+  tokenHash: { type: String, required: true, index: true },
+  expiresAt: { type: Date, required: true, index: true },
+  used: { type: Boolean, default: false, index: true },
+  ip: String,
+  userAgent: String,
+  createdAt: { type: Date, default: Date.now }
+});
+passwordResetSchema.index({ expiresAt: 1 }, { expireAfterSeconds: 0 });
+const PasswordReset = mongoose.model("PasswordReset", passwordResetSchema);
+
+const stripeEventSchema = new mongoose.Schema({
+  eventId: { type: String, unique: true, index: true },
+  createdAt: { type: Date, default: Date.now }
+});
+const StripeEvent = mongoose.model(
+  "StripeEvent",
+  stripeEventSchema
+);
+
+function generateResetToken() {
+  return crypto.randomBytes(32).toString("hex");
+}
+
+function hashToken(token) {
+  return crypto
+    .createHash("sha256")
+    .update(token)
+    .digest("hex");
+}
+
 const myCache = new NodeCache({ stdTTL: 600, checkperiod: 120 });
 
 function cacheRequest(ttl = 600) {
@@ -448,8 +569,20 @@ function clearReviewCache(seller) {
   if (targets.length > 0) myCache.del(targets);
 }
 
-const createLimiter = (max) => rateLimit({ windowMs: 60000, max, standardHeaders: true, legacyHeaders: false });
-const authLimiter = createLimiter(30);
+const createLimiter = (max) =>
+  rateLimit({
+    store: new RedisStore({
+      sendCommand: (...args) =>
+        redisClient.sendCommand(args),
+    }),
+    windowMs: 60000,
+    max,
+    standardHeaders: true,
+    legacyHeaders: false,
+  }
+);
+
+const authLimiter = createLimiter(10);
 
 const transporter = nodemailer.createTransport({ service: "gmail", auth: { user: process.env.EMAIL_USER, pass: process.env.EMAIL_PASS } });
 
@@ -516,7 +649,7 @@ app.post("/register/request", postLimiterIP, async (req,res)=>{
   const existingUser = await User.findOne({ schoolEmail });
 
   if (existingUser && existingUser.active) {
-      return res.status(400).json({ message: "Utente già registrato" });
+      return res.status(400).json({ message: "Credenziali errate" });
   }
   const now = Date.now();
   if(emailCooldown.has(schoolEmail) && now-emailCooldown.get(schoolEmail)<60000) return res.status(429).json({ message: "Attendi 60 secondi" });
@@ -584,7 +717,7 @@ app.post("/register/verify", postLimiterIP, authLimiter, async (req, res) => {
     }
   }
 
-  const hashed = await bcrypt.hash(password, 10);
+  const hashed = await bcrypt.hash(password, 12);
   const existingUser = await User.findOne({ schoolEmail });
 
   if (existingUser && existingUser.active) 
@@ -597,7 +730,7 @@ app.post("/register/verify", postLimiterIP, authLimiter, async (req, res) => {
     );
     await VerificationCode.deleteOne({ schoolEmail });
     failedAttempts.set(key, { count: 0, lock: 0 });
-    const token = jwt.sign({ id: schoolEmail }, SECRET_KEY);
+    const token = jwt.sign({ id: schoolEmail }, SECRET_KEY); // TODO add a refresh token mechanism later
     return res.status(201).json({ message: "Account riattivato", token });
   }
 
@@ -1005,7 +1138,7 @@ app.get("/profile/:email", verifyUser, cacheRequest(10), async (req, res) => {
     { schoolEmail: email, active: true },
     { firstName: 1, lastName: 1, profileImage: 1, instagram: 1, isReliable: 1, averageRating: 1, ratingsCount: 1, lastSeenAt: 1 }
   ).lean();
-  if (!user) return res.status(404).json({ message: "Utente non trovato" });
+  if (!user) return res.status(404).json({ message: "Credenziali errate" });
   const ONLINE_THRESHOLD = 5 * 60 * 1000;
   const isOnline = user.lastSeenAt && Date.now() - new Date(user.lastSeenAt).getTime() < ONLINE_THRESHOLD;
   res.status(200).json({
@@ -1362,6 +1495,227 @@ app.post("/premium/create-checkout", verifyUser, async (req, res) => {
     res.status(500).json({ message: "Errore creazione checkout premium" });
   }
 });
+
+app.post("/password-reset/request", postLimiterIP, async (req, res) => {
+  const { schoolEmail } = req.body;
+
+  if (!schoolEmail || !isValidSchoolEmail(schoolEmail)) {
+    return res.json({ message: "Se l'account esiste riceverai un'email" });
+  }
+
+  const user = await User.findOne({ schoolEmail, active: true });
+
+  if (!user) {
+    return res.json({ message: "Se l'account esiste riceverai un'email" });
+  }
+
+  const now = new Date();
+
+  await PasswordReset.updateMany(
+    { schoolEmail, used: false },
+    { used: true }
+  );
+
+  const rawToken = generateResetToken();
+  const tokenHash = hashToken(rawToken);
+
+  const expiresAt = new Date(Date.now() + 1000 * 60 * 15);
+
+  await PasswordReset.create({
+    schoolEmail,
+    tokenHash,
+    expiresAt,
+    ip: req.ip,
+    userAgent: req.headers["user-agent"]
+  });
+
+  const resetLink =
+    `https://studenticornaro.site/reset-password?token=${rawToken}`;
+
+  await sendEmailViaBridge({
+    to: schoolEmail,
+    subject: "Reset Password App Cornaro",
+    html: `
+      <div style="font-family:Arial;padding:20px">
+        <h2>Reset Password</h2>
+        <p>Clicca il link per reimpostare la password:</p>
+        <a href="${resetLink}">${resetLink}</a>
+        <p>Valido 15 minuti.</p>
+      </div>
+    `
+  });
+
+  res.json({ message: "Se l'account esiste riceverai un'email" });
+});
+
+app.post("/password-reset/verify", async (req, res) => {
+  const { token } = req.body;
+
+  if (!token) {
+    return res.status(400).json({ message: "Token mancante" });
+  }
+
+  const tokenHash = hashToken(token);
+
+  const record = await PasswordReset.findOne({
+    tokenHash,
+    used: false,
+    expiresAt: { $gt: new Date() }
+  });
+
+  if (!record) {
+    return res.status(400).json({ message: "Token non valido o scaduto" });
+  }
+
+  res.json({ valid: true });
+});
+
+app.post("/password-reset/confirm", async (req, res) => {
+  const { token, newPassword } = req.body;
+
+  if (!token || !newPassword) {
+    return res.status(400).json({ message: "Dati mancanti" });
+  }
+
+  if (newPassword.length < 8) {
+    return res.status(400).json({ message: "Password troppo corta" });
+  }
+
+  const tokenHash = hashToken(token);
+
+  const record = await PasswordReset.findOne({
+    tokenHash,
+    used: false,
+    expiresAt: { $gt: new Date() }
+  });
+
+  if (!record) {
+    return res.status(400).json({ message: "Token non valido o scaduto" });
+  }
+
+  const hashed = await bcrypt.hash(newPassword, 12);
+
+  await User.updateOne(
+    { schoolEmail: record.schoolEmail },
+    { password: hashed }
+  );
+
+  record.used = true;
+  await record.save();
+
+  await PasswordReset.updateMany(
+    { schoolEmail: record.schoolEmail, used: false },
+    { used: true }
+  );
+
+  res.json({ message: "Password aggiornata" });
+});
+
+app.post(
+  "/password-reset/request",
+  postLimiterIP,
+  async (req, res) => {
+    const { schoolEmail } = req.body;
+
+    if (!schoolEmail)
+      return res
+        .status(400)
+        .json({ message: "Email richiesta" });
+
+    const user = await User.findOne({
+      schoolEmail,
+      active: true,
+    });
+
+    if (!user)
+      return res.json({
+        message:
+          "Se l'email è registrata riceverai istruzioni",
+      });
+
+    const rawToken = generateResetToken();
+    const tokenHash = hashToken(rawToken);
+
+    const expiresAt = new Date(
+      Date.now() + 1000 * 60 * 30
+    );
+
+    await PasswordReset.create({
+      schoolEmail,
+      tokenHash,
+      expiresAt,
+      ip: req.ip,
+      userAgent: req.headers["user-agent"],
+    });
+
+    const resetLink = `https://app.studenticornaro.site/reset-password?token=${rawToken}`;
+
+    try {
+      await sendEmailViaBridge({
+        to: schoolEmail,
+        subject: "Reset password",
+        html: `
+          <div style="font-family:Arial;padding:20px">
+            <h2>Reset password</h2>
+            <p>Clicca il link sotto:</p>
+            <a href="${resetLink}">
+              Reset Password
+            </a>
+            <p>Valido 30 minuti.</p>
+          </div>
+        `,
+      });
+    } catch {}
+
+    res.json({
+      message:
+        "Se l'email è registrata riceverai istruzioni",
+    });
+  }
+);
+
+app.post(
+  "/password-reset/confirm",
+  postLimiterIP,
+  async (req, res) => {
+    const { token, newPassword } = req.body;
+
+    if (!token || !newPassword)
+      return res
+        .status(400)
+        .json({ message: "Dati mancanti" });
+
+    const tokenHash = hashToken(token);
+
+    const record = await PasswordReset.findOne({
+      tokenHash,
+      used: false,
+      expiresAt: { $gt: new Date() },
+    });
+
+    if (!record)
+      return res
+        .status(400)
+        .json({ message: "Token non valido" });
+
+    const hashed = await bcrypt.hash(
+      newPassword,
+      12
+    );
+
+    await User.updateOne(
+      { schoolEmail: record.schoolEmail },
+      { password: hashed }
+    );
+
+    record.used = true;
+    await record.save();
+
+    res.json({
+      message: "Password aggiornata",
+    });
+  }
+);
 
 async function sendEmailViaBridge({ to, subject, text, html }) {
   const fetch = (await import("node-fetch")).default;
