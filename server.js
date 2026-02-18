@@ -73,7 +73,7 @@ app.use(helmet({
 app.use(cors({ 
   origin: [
     "https://studenticornaro.site",
-    /* "*" // TODO to remove later */
+    "*" // TODO to remove later
   ],
   methods: ["GET", "POST"], 
   allowedHeaders: ["Content-Type", "Authorization", "stripe-signature"] 
@@ -1732,5 +1732,6 @@ setInterval(()=>{
   for(const [email,ts] of emailCooldown) if(now-ts>10*60000) emailCooldown.delete(email);
   for(const [email,data] of failedAttempts) if(data.lock<now) failedAttempts.delete(email);
 },5*60*1000);
+
 
 app.listen(PORT);
