@@ -73,7 +73,7 @@ app.use(helmet({
 app.use(cors({ 
   origin: [
     "https://studenticornaro.site",
-    "*" // TODO to remove later
+    "http://localhost:58089" // TODO to remove later
   ],
   methods: ["GET", "POST"], 
   allowedHeaders: ["Content-Type", "Authorization", "stripe-signature"] 
@@ -1735,3 +1735,4 @@ setInterval(()=>{
 
 
 app.listen(PORT);
+
